@@ -1,10 +1,13 @@
-datasets/
-data_tempai/
+dataset/
 runs/
 res/
-docs/
-old/
+app/
+
+.idea/
+.envmj/
+*.egg-info/
 __pycache__/
 
 *.pt
+note.*
 .DS_Store
