@@ -1,50 +1,33 @@
-from mahjong.hand_calculating.hand import HandCalculator
 from mahjong.tile import TilesConverter
-from mahjong.hand_calculating.hand_config import HandConfig, OptionalRules
 from mahjong.meld import Meld
-from mahjong.constants import EAST, SOUTH, WEST, NORTH
 
-# 手牌には副露牌も含める
-# 手牌には0を含めても良いが、鳴きやドラなどそれ以外の牌は0を含めないでほしい
+honor_map = {'to': '1', 'na': '2', 'sh': '3', 'pe': '4', 'hk': '5', 'ht': '6', 'ty': '7'}
 
-"""テスト用
-melds = [
-    Meld(Meld.PON, TilesConverter.string_to_136_array(man='555')),
-    Meld(Meld.CHANKAN, TilesConverter.string_to_136_array(man='2222'), opened=True),
-]
-"""
-
-
-calculator = HandCalculator()
-
-def print_hand_result(hand_result):
-    print('----------------')
-    print(hand_result.han, hand_result.fu)
-    print(hand_result.cost['main'], hand_result.cost['additional'])
-    print(hand_result.yaku)
-    for fu_item in hand_result.fu_details: 
-        print(fu_item)
-    print('')
-
-honor_map = {'ton': '1', 'nan': '2', 'sha': '3', 'pei': '4', 'hak': '5', 'hat': '6', 'tyn': '7'}
+replace = {
+    '5mr': '0m',
+    '5pr': '0p',
+    '5sr': '0s',
+    'hak': 'hk',
+    'hat': 'ht',
+    'nan': 'na',
+    'pei': 'pe',
+    'sha': 'sh',
+    'ton': 'to',
+    'tyn': 'ty',
+}
 
 def tiles_to_string(tiles):
     man, pin, sou, honors = [], [], [], []
-
     for tile in tiles:
-        t = tile['tile']
-        is_red = 'r' in t
-        t = t.replace('r', '')
-        num = '5' if is_red else t[0]
-
+        t = replace.get(tile['tile'], tile['tile'])
+        num = '5' if '0' in t else t[0]
         if t[-1] == 'm': man.append(num)
         elif t[-1] == 'p': pin.append(num)
         elif t[-1] == 's': sou.append(num)
         else: honors.append(honor_map.get(t, t))
-
     return ''.join(man), ''.join(pin), ''.join(sou), ''.join(honors)
 
-def convert_to_melds(actions):
+def convert_to_melds(actions: list[dict]) -> list[Meld]:
     new_actions = []
     reminders = []
     
@@ -93,28 +76,3 @@ def convert_to_melds(actions):
             melds.append(Meld(Meld.CHANKAN, TilesConverter.string_to_136_array(man=man, pin=pin, sou=sou, honors=honors)))
 
     return melds
-
-# Example usage
-
-input_actions = [
-    {'target_tiles': [{'tile': '5mr', 'fromOther': False}], 'action_type': "kan"},
-    {'target_tiles': [{'tile': '2m', 'fromOther': False}, {'tile': '2m', 'fromOther': False}, {'tile': '2m', 'fromOther': False}, {'tile': '2m', 'fromOther': False}], 'action_type': "kan"},
-    {'target_tiles': [{'tile': '5m', 'fromOther': True}, {'tile': '5m', 'fromOther': False}, {'tile': '5m', 'fromOther': False}], 'action_type': "pon"},
-    {'target_tiles': [{'tile': '1p', 'fromOther': True}, {'tile': '2p', 'fromOther': False}, {'tile': '3p', 'fromOther': False}], 'action_type': "chi"},
-    {'target_tiles': [{'tile': 'hat', 'fromOther': True}, {'tile': 'hat', 'fromOther': False}, {'tile': 'hat', 'fromOther': False}], 'action_type': "pon"},
-]
-
-# 手牌（カンの場合も全て含める、赤は含められる）
-tiles = TilesConverter.string_to_136_array(man='1122225505', pin='123', honors='666', has_aka_dora=True)
-# 上がり牌（赤は含められる）
-win_tile = TilesConverter.string_to_136_array(man='1', has_aka_dora=False)[0]
-# input_actions を melds型の配列に変換
-melds = convert_to_melds(input_actions)
-# ドラ（赤は含められる）
-dora_indicators = [TilesConverter.string_to_136_array(pin='1', has_aka_dora=False)[0]]
-# オプション等の設定
-config = HandConfig(is_tsumo=True,is_rinshan=False, options=OptionalRules(has_open_tanyao=True, has_aka_dora=True))
-# 評価
-result = calculator.estimate_hand_value(tiles, win_tile,melds,dora_indicators, config)
-# 点数等の表示
-print_hand_result(result)
