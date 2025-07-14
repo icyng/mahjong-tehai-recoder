@@ -25,6 +25,7 @@ markdown-it-py==3.0.0
 MarkupSafe==3.0.2
 matplotlib==3.10.3
 mdurl==0.1.2
+-e git+https://github.com/icyng/mj.git@177a8809607091fad599d4268636d197fd5936cd#egg=mj
 mpmath==1.3.0
 networkx==3.5
 numpy==2.2.6
