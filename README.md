@@ -17,11 +17,9 @@ pip-review --auto
 pip install -e . 
 ```
 
-### SAMPLE
+### SAMPLE(YOLOv12m)
 
-##### YOLOv12m
-
-![res](./res_v12m.png)
+![res](./result.png)
 
 ```bash
 Class: ht, Confidence: 0.832
@@ -37,26 +35,4 @@ Class: 6p, Confidence: 0.842
 Class: pe, Confidence: 0.550
 Class: 9s, Confidence: 0.896
 Class: 9s, Confidence: 0.856
-```
-
-##### YOLOv8n
-
-![res](./res_v08n.png)
-
-```bash
-Class: ht, Confidence: 0.865
-Class: ht, Confidence: 0.967
-Class: 1s, Confidence: 0.834
-Class: 3s, Confidence: 0.939
-Class: 5s, Confidence: 0.949
-Class: 6s, Confidence: 0.962
-Class: 8s, Confidence: 0.893
-Class: 5m, Confidence: 0.881
-Class: 6m, Confidence: 0.463
-Class: 5m, Confidence: 0.651
-Class: 5m, Confidence: 0.344
-Class: 7p, Confidence: 0.482
-Class: pe, Confidence: 0.956
-Class: 9s, Confidence: 0.825
-Class: 9s, Confidence: 0.955
 ```
