@@ -1,78 +1,52 @@
 from mahjong.tile import TilesConverter
 from mahjong.meld import Meld
+from mj.utils import tiles_to_mahjong_array_strings, RED_TILES
+from typing import List, TypedDict, Literal
 
-honor_map = {'to': '1', 'na': '2', 'sh': '3', 'pe': '4', 'hk': '5', 'ht': '6', 'ty': '7'}
+class TileInfo(TypedDict):
+    tile: str
+    fromOther: bool
 
-replace = {
-    '5mr': '0m',
-    '5pr': '0p',
-    '5sr': '0s',
-    'hak': 'hk',
-    'hat': 'ht',
-    'nan': 'na',
-    'pei': 'pe',
-    'sha': 'sh',
-    'ton': 'to',
-    'tyn': 'ty',
-}
+class ActionDict(TypedDict):
+    target_tiles: List[TileInfo]
+    action_type: Literal["chi", "pon", "kan", "chkan"]
 
-def tiles_to_string(tiles):
-    man, pin, sou, honors = [], [], [], []
-    for tile in tiles:
-        t = replace.get(tile['tile'], tile['tile'])
-        num = '5' if '0' in t else t[0]
-        if t[-1] == 'm': man.append(num)
-        elif t[-1] == 'p': pin.append(num)
-        elif t[-1] == 's': sou.append(num)
-        else: honors.append(honor_map.get(t, t))
-    return ''.join(man), ''.join(pin), ''.join(sou), ''.join(honors)
+def tile_infos_to_string(tiles):
+    tiles = [tile['tile'] for tile in tiles]
+    return tiles_to_mahjong_array_strings(tiles, need_aka=False)
 
-def convert_to_melds(actions: list[dict]) -> list[Meld]:
-    new_actions = []
-    reminders = []
-    
-    for action in actions:
-        target_tiles = action['target_tiles']
-        if len(target_tiles) != 1: new_actions.append(action)
-        else: reminders.append(target_tiles[0]['tile'])
-    
-    new2_actions = []
-    processed_tiles = set()
+def convert_to_melds(actions: List[ActionDict]) -> List[Meld]:
+    reminders = {a['target_tiles'][0]['tile'] for a in actions if len(a['target_tiles']) == 1}
 
-    for action in new_actions:
-        action_type = action['action_type']
-        target_tiles = action['target_tiles']
-
-        if action_type == 'pon':
-            tile_base = target_tiles[0]['tile'][:2]
-            for reminder in reminders:
-                reminder_base = reminder[:2]
-                if reminder_base == tile_base and reminder not in processed_tiles:
-                    target_tiles.insert(2, {'tile': reminder, 'fromOther': False})
-                    action_type = 'chkan'
-                    processed_tiles.add(reminder)
-                    break
-        new2_actions.append({'target_tiles': target_tiles, 'action_type': action_type})
-    
     melds = []
+    meld_type_map = {
+        'chi': Meld.CHI,
+        'pon': Meld.PON,
+        'kan': Meld.KAN,
+        'chkan': Meld.CHANKAN
+    }
 
-    for action in new2_actions:
-        action_type = action['action_type']
-        target_tiles = action['target_tiles']
-        from_other = any(tile['fromOther'] for tile in target_tiles)
+    for act in (a for a in actions if len(a['target_tiles']) > 1):
+        tiles = act['target_tiles']
 
-        man, pin, sou, honors = tiles_to_string(target_tiles)
+        # 加槓への昇格判定（pon → chkan）
+        if act['action_type'] == 'pon':
+            base = tiles[0]['tile']
+            red_match = {r for r in reminders if '5' in base and r in RED_TILES}
+            exact_match = {r for r in reminders if r == base}
+            candidates = (red_match | exact_match) - {t['tile'] for t in tiles}
+            if candidates:
+                tiles.insert(2, {'tile': candidates.pop(), 'fromOther': False})
+                act['action_type'] = 'chkan'
 
-        if action_type == 'chi':
-            melds.append(Meld(Meld.CHI, TilesConverter.string_to_136_array(man=man, pin=pin, sou=sou, honors=honors)))
-        elif action_type == 'pon':
-            melds.append(Meld(Meld.PON, TilesConverter.string_to_136_array(man=man, pin=pin, sou=sou, honors=honors)))
-        elif action_type == 'kan':
-            if from_other:
-                melds.append(Meld(Meld.KAN, TilesConverter.string_to_136_array(man=man, pin=pin, sou=sou, honors=honors), opened=True))
-            else:
-                melds.append(Meld(Meld.KAN, TilesConverter.string_to_136_array(man=man, pin=pin, sou=sou, honors=honors), opened=False))
-        elif action_type == 'chkan':
-            melds.append(Meld(Meld.CHANKAN, TilesConverter.string_to_136_array(man=man, pin=pin, sou=sou, honors=honors)))
+        sou, pin, man, honors = tile_infos_to_string(tiles)
+        path = TilesConverter.string_to_136_array(
+            man=man, pin=pin, sou=sou, honors=honors
+        )
+
+        opened = any(t.get('fromOther') for t in tiles)
+        meld_const = meld_type_map[act['action_type']]
+        kwargs = {'opened': opened} if act['action_type'] == 'kan' else {}
+        melds.append(Meld(meld_const, path, **kwargs))
 
     return melds
