@@ -1,3 +1,5 @@
+import os
+from dotenv import load_dotenv
 from mahjong.constants import EAST, SOUTH, WEST, NORTH
 from mj.models.tehai.myyolo import MYYOLO
 from mj.utils import print_hand_result
@@ -7,12 +9,13 @@ from mj.toMelds import convert_to_melds
 
 def main():
     
+    load_dotenv()
+    
     # --- 手牌解析の計算 ---
     
     tile_infos, tile_names = MYYOLO(
-        model_path='models/tehai/best.pt',
-        file_path='models/dataset/data_tempai/test.png',
-        conf=0.2
+        model_path=os.environ['MODEL_PATH'],
+        image_path=os.environ['IMAGE_PATH'],
     )
     
     for result in tile_infos:
