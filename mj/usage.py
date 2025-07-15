@@ -41,11 +41,11 @@ def main():
     tile_names = ['1m','2m','2m','2m','2m','5m','5m','0m','5m','1p','2p','3p','ht','ht','ht']
     
     input_actions = [
-        {'target_tiles': [{'tile': '5mr', 'fromOther': False}], 'action_type': "kan"},
+        {'target_tiles': [{'tile': '0m', 'fromOther': False}], 'action_type': "kan"},
         {'target_tiles': [{'tile': '2m', 'fromOther': False}, {'tile': '2m', 'fromOther': False}, {'tile': '2m', 'fromOther': False}, {'tile': '2m', 'fromOther': False}], 'action_type': "kan"},
         {'target_tiles': [{'tile': '5m', 'fromOther': True}, {'tile': '5m', 'fromOther': False}, {'tile': '5m', 'fromOther': False}], 'action_type': "pon"},
         {'target_tiles': [{'tile': '1p', 'fromOther': True}, {'tile': '2p', 'fromOther': False}, {'tile': '3p', 'fromOther': False}], 'action_type': "chi"},
-        {'target_tiles': [{'tile': 'hat', 'fromOther': True}, {'tile': 'hat', 'fromOther': False}, {'tile': 'hat', 'fromOther': False}], 'action_type': "pon"},
+        {'target_tiles': [{'tile': 'ht', 'fromOther': True}, {'tile': 'ht', 'fromOther': False}, {'tile': 'ht', 'fromOther': False}], 'action_type': "pon"},
     ]
     
     melds = convert_to_melds(input_actions)
