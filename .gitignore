@@ -9,5 +9,6 @@ app/
 __pycache__/
 
 *.pt
+*.env
 note.*
 .DS_Store
