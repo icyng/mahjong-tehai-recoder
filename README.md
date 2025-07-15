@@ -22,17 +22,18 @@ pip install -e .
 ![res](./result.png)
 
 ```bash
-Class: ht, Confidence: 0.832
-Class: ht, Confidence: 0.863
-Class: 1s, Confidence: 0.365
-Class: 3s, Confidence: 0.948
-Class: 5s, Confidence: 0.889
-Class: 6s, Confidence: 0.872
-Class: 8s, Confidence: 0.612
-Class: 5m, Confidence: 0.435
-Class: 6m, Confidence: 0.923
-Class: 6p, Confidence: 0.842
-Class: pe, Confidence: 0.550
-Class: 9s, Confidence: 0.896
-Class: 9s, Confidence: 0.856
+# 左から順に
+Class: ht, Confidence: 0.923
+Class: ht, Confidence: 0.922
+Class: 1s, Confidence: 0.918
+Class: 3s, Confidence: 0.901
+Class: 5s, Confidence: 0.935
+Class: 6s, Confidence: 0.937
+Class: 8s, Confidence: 0.895
+Class: 5m, Confidence: 0.915
+Class: 6m, Confidence: 0.937
+Class: 6p, Confidence: 0.907
+Class: pe, Confidence: 0.891
+Class: 9s, Confidence: 0.925
+Class: 9s, Confidence: 0.860
 ```
