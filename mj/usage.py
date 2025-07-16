@@ -5,6 +5,7 @@ from mj.models.tehai.myyolo import MYYOLO
 from mj.utils import print_hand_result
 from mj.calcHand import analyze_hand
 from mj.toMelds import convert_to_melds
+from mj.machi import machi_hai_13
 
 
 def main():
@@ -14,16 +15,22 @@ def main():
     # --- 手牌解析の計算 ---
     
     tile_infos, tile_names = MYYOLO(
-        model_path=os.environ['MODEL_PATH'],
-        image_path=os.environ['IMAGE_PATH'],
+        model_path=os.environ["MODEL_PATH"],
+        image_path=os.environ["IMAGE_PATH"]
     )
     
     for result in tile_infos:
         print(f"Class: {result['class']}, Confidence: {result['conf']:.3f}")
     
+    shape = machi_hai_13(tile_names)
+    if isinstance(shape, str):
+        print('---\n',shape)
+    else:
+        print(f"---\n待ち：{shape}")
+    
     hand, agari, config = analyze_hand(
         tiles=tile_names,
-        win='5p',
+        win='3p',
         has_aka=False,
         melds=[],
         doras=['to','8m'],

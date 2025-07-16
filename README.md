@@ -23,17 +23,29 @@ pip install -e .
 
 ```bash
 # 左から順に
-Class: ht, Confidence: 0.923
-Class: ht, Confidence: 0.922
-Class: 1s, Confidence: 0.918
-Class: 3s, Confidence: 0.901
-Class: 5s, Confidence: 0.935
-Class: 6s, Confidence: 0.937
-Class: 8s, Confidence: 0.895
-Class: 5m, Confidence: 0.915
-Class: 6m, Confidence: 0.937
-Class: 6p, Confidence: 0.907
-Class: pe, Confidence: 0.891
-Class: 9s, Confidence: 0.925
-Class: 9s, Confidence: 0.860
+Class: 9s, Confidence: 0.864
+Class: 8s, Confidence: 0.870
+Class: 7s, Confidence: 0.926
+Class: 2p, Confidence: 0.899
+Class: 4p, Confidence: 0.915
+Class: 5p, Confidence: 0.933
+Class: 5p, Confidence: 0.924
+Class: 7p, Confidence: 0.931
+Class: 8p, Confidence: 0.895
+Class: 9p, Confidence: 0.939
+Class: 9m, Confidence: 0.900
+Class: 9m, Confidence: 0.901
+Class: 0p, Confidence: 0.904
+---
+待ち：['3p']
+
+@自家手牌 : ['987', '245578903', '99', '']
+@アガリ牌 : 3p
+@ツモ : 5翻 40符 2000 4000
+@役 : [Menzen Tsumo, Riichi, Dora 3]
+@符詳細 : 
+{'fu': 20, 'reason': 'base'}
+{'fu': 8, 'reason': 'closed_terminal_pon'}
+{'fu': 2, 'reason': 'kanchan'}
+{'fu': 2, 'reason': 'tsumo'}
 ```
