@@ -20,5 +20,4 @@ with open("res.txt","w") as o:
             class_name = class_names[class_id]
             print(f"Class: {class_name}, Confidence: {confidence:.3f}",file=o)
         print('\n',file=o)
-            
-        # result.save(filename=f"res/r{name}")  # save to disk
+        result.save(filename=f"../res/r{name}")
