@@ -37,17 +37,11 @@ def tiles_to_mahjong_array_strings(
         elif hai in HZ_TO_NUM: 
             honor += str(HZ_TO_NUM[hai])
     
-<<<<<<< HEAD
-    hand = [man,pin,sou,honor]
-=======
     hand = [sou,pin,man,honor]
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
     if not need_aka: 
         return [h.replace('0','5') for h in hand]
     return hand
 
-<<<<<<< HEAD
-=======
 def print_hand_result(hand, agari, res, is_tsumo):
     '''
     結果出力
@@ -71,7 +65,6 @@ def print_hand_result(hand, agari, res, is_tsumo):
     for fu_item in res.fu_details: 
         print(fu_item)
 
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
 
 # ----- 不採用 -----
 

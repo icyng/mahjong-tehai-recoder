@@ -22,24 +22,15 @@ def split_data(
     """
 
     for folder in o_folders:
-<<<<<<< HEAD
-        image_out_dir = f'dataset/mj/images/{folder}'
-        label_out_dir = f'dataset/mj/labels/{folder}'
-=======
         image_out_dir = f'../dataset/mj/images/{folder}'
         label_out_dir = f'../dataset/mj/labels/{folder}'
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
         os.makedirs(image_out_dir, exist_ok=True)
         os.makedirs(label_out_dir, exist_ok=True)
 
     image_files = sorted(os.listdir(image_source_folder.format(pic_num)))
     label_files = sorted(os.listdir(label_source_folder.format(pic_num)))
 
-<<<<<<< HEAD
-    random.seed(23)
-=======
     random.seed(42)
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
     all_files = list(zip(image_files, label_files))
     random.shuffle(all_files)
     image_files, label_files = zip(*all_files)
@@ -58,37 +49,21 @@ def split_data(
             label_source_path = os.path.join(label_source_folder.format(pic_num), label)
 
             image_target_path = os.path.join(
-<<<<<<< HEAD
-                f'dataset/mj/images/{o_folders[group_index]}', f'{pic_num}{image}'
-            )
-            label_target_path = os.path.join(
-                f'dataset/mj/labels/{o_folders[group_index]}', f'{pic_num}{label}'
-=======
                 f'../dataset/mj/images/{o_folders[group_index]}', f'{pic_num}{image}'
             )
             label_target_path = os.path.join(
                 f'../dataset/mj/labels/{o_folders[group_index]}', f'{pic_num}{label}'
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
             )
 
             shutil.copy(image_source_path, image_target_path)
             shutil.copy(label_source_path, label_target_path)
 
 # ========== 設定 ==========
-<<<<<<< HEAD
-images = "dataset/org/pic{}/images"
-labels = "dataset/org/pic{}/labels"
-o_folders = ["test", "val", "train"]
-# 分割比率（例: test:val:train = 1:1:8）
-ratios = [3/20, 3/20, 7/10]
-pic_nums = 10
-=======
 images = "../dataset/org/pic{}/images"
 labels = "../dataset/org/pic{}/labels"
 o_folders = ["test", "val", "train"]
 # 分割比率（例: test:val:train = 1:1:8）
 ratios = [1/10, 1/10, 8/10]
 pic_nums = 1
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
 for i in range(pic_nums):
     split_data(images, labels, o_folders, ratios, i + 1)

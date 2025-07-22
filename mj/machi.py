@@ -19,28 +19,16 @@ def machi_hai_13(hand: list[str]) -> List[str] | str:
     - 聴牌     → ['1m', '4p', ...]（待ち牌リスト）
     '''
     
-<<<<<<< HEAD
-    assert len(hand) >= 13, f'手牌が{len(hand)}枚しかありません'
-    
-=======
     waits = []
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
     shanten_engine = Shanten()
     config = tiles_to_mahjong_array_strings(hand, need_aka=False)
     base34 = TilesConverter.string_to_34_array(*config)
     current = shanten_engine.calculate_shanten(base34)
     
-<<<<<<< HEAD
-    if current < 0: 
-        return '和了'
-    elif current > 0: 
-        return f'{current}向聴'
-=======
     if current < 0:
         return 'agari'
     elif current > 0:
         return f'{current} shanten'
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
     
     waits: list[str] = []
     for idx, tile in enumerate(ALL_TILES_NO_RED_TILES):
@@ -50,8 +38,4 @@ def machi_hai_13(hand: list[str]) -> List[str] | str:
         test34[idx] += 1
         if shanten_engine.calculate_shanten(test34) < 0:
             waits.append(tile)
-<<<<<<< HEAD
-            
-=======
->>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
     return waits
