@@ -37,11 +37,41 @@ def tiles_to_mahjong_array_strings(
         elif hai in HZ_TO_NUM: 
             honor += str(HZ_TO_NUM[hai])
     
+<<<<<<< HEAD
     hand = [man,pin,sou,honor]
+=======
+    hand = [sou,pin,man,honor]
+>>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
     if not need_aka: 
         return [h.replace('0','5') for h in hand]
     return hand
 
+<<<<<<< HEAD
+=======
+def print_hand_result(hand, agari, res, is_tsumo):
+    '''
+    結果出力
+    
+    :param hand: list[str], 自家手牌
+    :param agari: str, アガリ牌
+    :param res: HandResult, 手牌の解析結果
+    :param is_tsumo: bool, ツモかロン
+    '''
+    print(f"\n@自家手牌 : {hand}")
+    print(f"@アガリ牌 : {agari}")
+    if not res.cost or not res.fu_details:
+        print(f"@result : {res}")
+        return
+    if is_tsumo:
+        print(f"@ツモ : {res.han}翻 {res.fu}符 {res.cost['additional']} {res.cost['main']}")
+    else:
+        print(f"@ロン : {res.han}翻 {res.fu}符 {res.cost['main']} {res.cost['additional']}")
+    print(f"@役 : {res.yaku}")
+    print("@符詳細 : ")
+    for fu_item in res.fu_details: 
+        print(fu_item)
+
+>>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
 
 # ----- 不採用 -----
 

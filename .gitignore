@@ -9,5 +9,9 @@ app/
 __pycache__/
 
 *.pt
+<<<<<<< HEAD
+=======
+*.env
+>>>>>>> 3a0fbafee8d93edba41c2cad6f5b27816fde0ec7
 note.*
 .DS_Store
