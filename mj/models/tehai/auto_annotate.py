@@ -1,7 +1,6 @@
 from ultralytics import YOLO
-import os
 
-model = YOLO("best-train2.pt")
+model = YOLO("best.pt")
 
 image_dir = "autoano/images"
 output_dir = "autoano"
@@ -13,5 +12,7 @@ results = model.predict(
     project=output_dir,
     name="",
     exist_ok=True,
-    imgsz=640
+    iou=0.5,
+    imgsz=640,
+    device=0
 )

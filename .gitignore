@@ -3,6 +3,7 @@ runs/
 res/
 app/
 autoano/
+pic*/
 
 .idea/
 .envmj/
@@ -13,3 +14,4 @@ __pycache__/
 *.env
 note.*
 .DS_Store
+res.txt

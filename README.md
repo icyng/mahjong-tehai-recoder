@@ -1,6 +1,6 @@
 # 麻雀手牌解析
 
-icyng、2025/07/15
+icyng、2025/08/11
 
 ---
 
@@ -13,7 +13,6 @@ icyng、2025/07/15
 ### todo
 
 ```bash
-pip-review --auto
 pip install -e . 
 ```
 
@@ -22,6 +21,8 @@ pip install -e .
 ![res](./result.png)
 
 ```bash
+> python usage.py
+
 # 左から順に
 Class: 9s, Confidence: 0.864
 Class: 8s, Confidence: 0.870

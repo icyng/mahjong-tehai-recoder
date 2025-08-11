@@ -64,6 +64,6 @@ labels = "../dataset/org/pic{}/labels"
 o_folders = ["test", "val", "train"]
 # 分割比率（例: test:val:train = 1:1:8）
 ratios = [1/10, 1/10, 8/10]
-pic_nums = 1
+pic_nums = 11
 for i in range(pic_nums):
     split_data(images, labels, o_folders, ratios, i + 1)

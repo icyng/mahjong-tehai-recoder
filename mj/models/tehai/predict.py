@@ -18,6 +18,5 @@ with open("res.txt","w") as o:
             class_id = int(box.cls[0])
             confidence = box.conf[0]
             class_name = class_names[class_id]
-            print(f"Class: {class_name}, Confidence: {confidence:.3f}",file=o)
-        print('\n',file=o)
-        result.save(filename=f"../res/r{name}")
+            print(f"{class_name}({confidence:.3f})",file=o)
+        result.save(filename=f"../res/r{name}", font_size=3, line_width=2)
