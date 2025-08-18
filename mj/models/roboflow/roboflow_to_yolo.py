@@ -1,3 +1,7 @@
+"""
+RoboflowからYOLO形式へのラベル変換スクリプト
+"""
+
 import os
 
 # Roboflow names
@@ -53,5 +57,5 @@ def convert_all_txt_files(folder_path):
     print(f"✅ 変換完了: {folder_path} 内のすべての .txt ファイルに適用しました。")
 
 # usage
-folder = 'pic11/labels'
+folder = 'pic12/labels'
 convert_all_txt_files(folder)
