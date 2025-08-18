@@ -1,43 +1,39 @@
-# 麻雀手牌解析
+# 麻雀手牌解析ツール
 
-icyng、2025/08/11
+画像認識を利用して手牌画像から牌情報を抽出し、点数計算まで行います
 
----
+## ⚠️ Warning
 
-## 概要
+macOS での動作を想定しているため、Windows の場合は以下を遵守してください：
 
-- 画像認識を利用して手牌画像から牌情報を抽出し、点数計算まで行う
-- 現状、卓情報（アガリ牌・ドラ・副露）は手入力
-- 今後、天井カメラによる、卓上の捨牌・ドラ・副露の解析
+```
+> python --version
+3.10.8
 
-### todo
-
-```bash
-pip install -e . 
+> uv pip list
+torch==2.7.1+cu118
+torchaudio==2.7.1+cu118
+torchvision==0.22.1+cu118
 ```
 
-### SAMPLE(YOLOv12m)
+## Setup
+
+`uv` を用いて依存関係を管理します
+
+```bash
+uv sync
+uv pip install -e .
+```
+
+## SAMPLE(YOLOv12m)
 
 ![res](./result.png)
 
 ```bash
-> python usage.py
+> uv run usage.py
 
-# 左から順に
-Class: 9s, Confidence: 0.864
-Class: 8s, Confidence: 0.870
-Class: 7s, Confidence: 0.926
-Class: 2p, Confidence: 0.899
-Class: 4p, Confidence: 0.915
-Class: 5p, Confidence: 0.933
-Class: 5p, Confidence: 0.924
-Class: 7p, Confidence: 0.931
-Class: 8p, Confidence: 0.895
-Class: 9p, Confidence: 0.939
-Class: 9m, Confidence: 0.900
-Class: 9m, Confidence: 0.901
-Class: 0p, Confidence: 0.904
----
+...
+
 待ち：['3p']
 
 @自家手牌 : ['987', '245578903', '99', '']
