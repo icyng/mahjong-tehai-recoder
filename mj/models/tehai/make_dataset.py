@@ -17,7 +17,7 @@ def split_data(
         image_source_folder (str): 画像ファイルが格納されているソースフォルダのパス（フォーマット文字列）
         label_source_folder (str): ラベルファイルが格納されているソースフォルダのパス（フォーマット文字列）
         o_folders (list): 出力フォルダ名のリスト（例: ["test", "val", "train"]）
-        ratios (list): o_folders に対応する各フォルダへの分割比（例: [0.1, 0.1, 0.8]）
+        ratios (list): o_folders に対応する各フォルダへの分割比（例: [0.1, 0.2, 0.7]）
         pic_num (int): 処理対象のソースフォルダ番号（例: 1 → "pic1"）、フォーマット文字列にしてるのはそのため
     """
 
@@ -63,7 +63,7 @@ images = "../dataset/org/pic{}/images"
 labels = "../dataset/org/pic{}/labels"
 o_folders = ["test", "val", "train"]
 # 分割比率（例: test:val:train = 1:1:8）
-ratios = [1/10, 1/10, 8/10]
-pic_nums = 11
+ratios = [1/10, 2/10, 7/10]
+pic_nums = 12
 for i in range(pic_nums):
     split_data(images, labels, o_folders, ratios, i + 1)
