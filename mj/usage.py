@@ -1,5 +1,3 @@
-import os
-from dotenv import load_dotenv
 from mahjong.constants import EAST, SOUTH, WEST, NORTH
 from mj.models.tehai.myyolo import MYYOLO
 from mj.utils import print_hand_result
@@ -10,13 +8,11 @@ from mj.machi import machi_hai_13
 
 def main():
     
-    load_dotenv()
-    
     # --- 手牌解析の計算 ---
     
     tile_infos, tile_names = MYYOLO(
-        model_path=os.environ["MODEL_PATH"],
-        image_path=os.environ["IMAGE_PATH"]
+        model_path="best.pt",
+        image_path="showcase/agari3.png",
     )
     
     for result in tile_infos:
