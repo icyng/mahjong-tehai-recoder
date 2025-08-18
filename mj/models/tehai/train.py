@@ -9,7 +9,7 @@ def main():
     results = model.train(
         data='../dataset/coco128.yml', 
         epochs=500,
-        batch=8,
+        batch=16,
         device=0
     )
     metrics = model.val()
