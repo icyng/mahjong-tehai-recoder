@@ -1,18 +1,14 @@
 dataset/
 runs*/
 res/
-app/
-autoano/
-pic*/
 show*/
 
-.idea/
-.envmj/
+weights/
 *.egg-info/
 __pycache__/
 
 *.pt
 *.env
-note.*
 .DS_Store
 res.txt
+pai.jpg
