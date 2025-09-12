@@ -18,7 +18,7 @@ torchvision==0.22.1+cu118
 
 ## Setup
 
-`uv` を用いて依存関係を管理します
+管理は `uv` 、アノテーションは `roboflow` 、pre-trained モデルは YOLOv12m
 
 ```bash
 uv sync
