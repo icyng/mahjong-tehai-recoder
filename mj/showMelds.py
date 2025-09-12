@@ -1,9 +1,5 @@
 from typing import List, Dict, Any
 
-def sort_tiles(tiles: List[str]) -> List[str]:
-    """ 数字順に並び替え（m, p, sの順を保持）"""
-    return sorted(tiles, key=lambda x: (x[1], int(x[0])))
-
 def generate_naki_choices(action_type: str, tiles: List[str], target_tile: str, from_who: str = "left") -> List[Dict[str, Any]]:
     """
     指定された鳴き（ポン・チー・カン(暗、明、加)）が可能であるという仮定のもと、鳴き後の手牌と副露情報を返す
@@ -75,17 +71,19 @@ def generate_naki_choices(action_type: str, tiles: List[str], target_tile: str, 
         
         for chi_set in possible_sets:
             # 手牌にあるものだけを抽出
-            available_tiles = [tile for tile in chi_set if tile in tiles]
+            ava_tiles = [tile for tile in chi_set if tile in tiles]
             
-            if len(available_tiles) >= 2:
+            if len(ava_tiles) >= 2:
                 remaining_tiles = tiles[:]
                 
                 # 2枚だけ削除
-                for tile in available_tiles:
+                for tile in ava_tiles:
                     remaining_tiles.remove(tile)
                 
                 # target_tiles を数値順にソートし、鳴いた牌を左端に固定
-                target_tiles = [{"tile": target_tile, "fromOther": True}] + [{"tile": tile, "fromOther": False} for tile in sort_tiles(available_tiles)]
+                target_tiles = \
+                    [{"tile": target_tile, "fromOther": True}] + \
+                    [{"tile": tile, "fromOther": False} for tile in sorted(ava_tiles, key=lambda x: (x[1], int(x[0])))]
                 
                 candidates.append({
                     "target_tiles": target_tiles,
