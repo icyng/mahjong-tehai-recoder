@@ -4,14 +4,14 @@ from mj.models.tehai.myyolo import MYYOLO
 model_name = "openai/gpt-oss-20b"
 
 _, tiles = MYYOLO(
-    model_path='models/tehai/best.pt',
-    image_path='models/dataset/mj/images/test/1131.jpg')
+    model_path='best.pt',
+    image_path='agari.png',)
  
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     torch_dtype="auto",
-    device_map="cpu" # 重い
+    device_map="mps"
 )
  
 messages = [

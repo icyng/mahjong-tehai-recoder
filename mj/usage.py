@@ -11,8 +11,8 @@ def main():
     # --- 手牌解析の計算 ---
     
     tile_infos, tile_names = MYYOLO(
-        model_path="best.pt",
-        image_path="showcase/agari3.png",
+        model_path="mj/models/tehai/weights/best.pt",
+        image_path="mj/models/tehai/showcase/agari3.png",
     )
     
     for result in tile_infos:
