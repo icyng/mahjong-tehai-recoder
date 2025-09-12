@@ -2,7 +2,7 @@ from ultralytics import YOLO
 import os
 
 # 推論
-folder_path = '../dataset/mj/images/test/'
+folder_path = 'dataset/mj/images/test/'
 file_names = os.listdir(folder_path)
 file_pathes = [folder_path+f for f in file_names if '.db' not in f]
 

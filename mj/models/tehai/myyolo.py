@@ -4,7 +4,8 @@ def MYYOLO(
     model_path: str, 
     image_path: str,
     conf: float = 0.5,
-    iou: float = 0.5
+    iou: float = 0.5,
+    show: bool = False
 ):
     """指定されたモデルを使用して指定画像内の牌を検出し、結果を整形して返す
 
@@ -26,7 +27,7 @@ def MYYOLO(
         iou=iou,
         save=False
     )[0]
-    result.show(font_size=3, line_width=2)
+    if show: result.show(font_size=3, line_width=2)
     cls_names = model.names
     
     boxes = result.boxes

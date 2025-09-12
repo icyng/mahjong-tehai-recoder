@@ -3,7 +3,7 @@
 from ultralytics import YOLO
 from multiprocessing import freeze_support
 
-DATA_YAML = "../dataset/coco128.yml"
+DATA_YAML = "dataset/coco128.yml"
 WEIGHTS = "yolov12m.pt"
 PROJECT = "runs_mj"
 RUN_NAME = "yolov12m_tehai_mps"

@@ -22,8 +22,8 @@ def split_data(
     """
 
     for folder in o_folders:
-        image_out_dir = f'../dataset/mj/images/{folder}'
-        label_out_dir = f'../dataset/mj/labels/{folder}'
+        image_out_dir = f'dataset/mj/images/{folder}'
+        label_out_dir = f'dataset/mj/labels/{folder}'
         os.makedirs(image_out_dir, exist_ok=True)
         os.makedirs(label_out_dir, exist_ok=True)
 
@@ -49,18 +49,18 @@ def split_data(
             label_source_path = os.path.join(label_source_folder.format(pic_num), label)
 
             image_target_path = os.path.join(
-                f'../dataset/mj/images/{o_folders[group_index]}', f'{pic_num}{image}'
+                f'dataset/mj/images/{o_folders[group_index]}', f'{pic_num}{image}'
             )
             label_target_path = os.path.join(
-                f'../dataset/mj/labels/{o_folders[group_index]}', f'{pic_num}{label}'
+                f'dataset/mj/labels/{o_folders[group_index]}', f'{pic_num}{label}'
             )
 
             shutil.copy(image_source_path, image_target_path)
             shutil.copy(label_source_path, label_target_path)
 
 # ========== 設定 ==========
-images = "../dataset/org/pic{}/images"
-labels = "../dataset/org/pic{}/labels"
+images = "dataset/org/pic{}/images"
+labels = "dataset/org/pic{}/labels"
 o_folders = ["test", "val", "train"]
 # 分割比率（例: test:val:train = 1:1:8）
 ratios = [1/10, 2/10, 7/10]

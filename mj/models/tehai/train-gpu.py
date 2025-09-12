@@ -7,7 +7,7 @@ def main():
     version = 'yolov12m.pt'
     model = YOLO(version)
     results = model.train(
-        data='../dataset/coco128.yml',
+        data='dataset/coco128.yml',
         epochs=500,
         batch=16,
         device='0'

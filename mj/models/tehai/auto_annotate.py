@@ -2,8 +2,8 @@ from ultralytics import YOLO
 
 model = YOLO("best.pt")
 
-images_dir = "../dataset/autoano/images"
-output_dir = "../dataset/autoano"
+images_dir = "dataset/autoano/images"
+output_dir = "dataset/autoano"
 
 results = model.predict(
     source=images_dir,
