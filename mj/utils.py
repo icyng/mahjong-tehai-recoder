@@ -37,7 +37,8 @@ def tiles_to_mahjong_array_strings(
         elif hai in HZ_TO_NUM: 
             honor += str(HZ_TO_NUM[hai])
     
-    hand = [sou,pin,man,honor]
+    # TilesConverter.string_to_34_array expects [man, pin, sou, honors]
+    hand = [man,pin,sou,honor]
     if not need_aka: 
         return [h.replace('0','5') for h in hand]
     return hand
