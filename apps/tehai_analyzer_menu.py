@@ -1,21 +1,24 @@
+from pathlib import Path
+import sys
+
 import streamlit as st
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 st.set_page_config(layout="wide", page_title="Mahjong Analyzer")
 
 with st.sidebar:
     choice = st.radio(
-        "解析対象メディア",
-        ["画像 (png, jpg)", "動画 (mp4, mov, avi)"],
+        "メニュー",
+        ["画像 (png, jpg)", "動画 (mp4, mov, avi)", "牌譜記録ツール"],
         index=0,
-        help="画像と動画のどちらを解析対象とするかを選んでください",
+        help="解析対象か牌譜記録ツールを選択してください",
     )
-
-# --- ページ切替（関数呼び出し） ---
-# 依存モジュールを遅延インポート（起動時の無駄なロードを避ける）
 if choice == "画像 (png, jpg)":
     from src import tehai_analyzer_img as page
-else:
+elif choice == "動画 (mp4, mov, avi)":
     from src import tehai_analyzer_mov as page
 
-# 各デモは render() を公開している想定
 page.render()
