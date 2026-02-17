@@ -42,5 +42,5 @@ uv run apps/tehai_recorder.py dev
 
 ## 補足
 
-- NAS 運用想定の Docker 構成手順は `deploy/README.md` を参照すること
+- NAS 運用想定の Docker 構成手順は `deploy/README.md` を参照
 - 学習/検証向けの補助スクリプトやデータセットは非公開
