@@ -28,6 +28,14 @@ body {
   padding: 0px;
 }
 
+.screen-capture-video {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .app-container {
   display: flex;
   gap: 16px;

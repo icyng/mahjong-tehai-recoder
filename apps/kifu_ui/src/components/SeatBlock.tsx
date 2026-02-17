@@ -214,7 +214,7 @@ export const SeatBlock = ({
                 onClick={() => onImportImage(item.seat)}
                 disabled={importDisabled}
               >
-                画像読込
+                画像読み込み
               </button>
             )}
             {item.actions.map((action) => (

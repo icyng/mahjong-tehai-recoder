@@ -18,6 +18,17 @@ export type ImageAnalyzeResponse = {
   error?: string;
 };
 
+export type CaptureResponse = {
+  ok: boolean;
+  inference_seconds?: number;
+  hand?: { tiles: TileStr[] };
+  debug?: {
+    image_size?: { width: number; height: number };
+    raw_tiles?: string[];
+  };
+  error?: string;
+};
+
 export type WinPayload = {
   hand: TileStr[];
   melds: any[];
@@ -87,6 +98,32 @@ export const analyzeTilesFromImage = async (file: File, timeoutMs = 60000): Prom
       throw new Error(`request failed: ${res.status}`);
     }
     return (await res.json()) as ImageAnalyzeResponse;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("画像解析がタイムアウトしました");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
+export const captureTilesFromImage = async (blob: Blob, timeoutMs = 60000): Promise<CaptureResponse> => {
+  const form = new FormData();
+  const file = new File([blob], "capture.jpg", { type: "image/jpeg" });
+  form.append("file", file);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch("/api/capture", {
+      method: "POST",
+      body: form,
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      throw new Error(`request failed: ${res.status}`);
+    }
+    return (await res.json()) as CaptureResponse;
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       throw new Error("画像解析がタイムアウトしました");

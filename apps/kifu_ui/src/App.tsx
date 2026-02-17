@@ -17,7 +17,7 @@ import {
   rebuildDoraYakuList,
   type DoraCounts
 } from "./lib/score_utils";
-import { analyzeTilesFromImage, postTenpai, scoreWin, type TenpaiResponse, type WinPayload } from "./lib/mahjong_api";
+import { captureTilesFromImage, postTenpai, scoreWin, type TenpaiResponse, type WinPayload } from "./lib/mahjong_api";
 
 type Step = {
   index: number;
@@ -51,6 +51,8 @@ const MELD_TILE_W = 20;
 const MELD_TILE_H = 28;
 const TOTAL_TILES = 136;
 const SCORE_DEBUG = false;
+const CAPTURE_MAX_EDGE = 1280;
+const CAPTURE_JPEG_QUALITY = 0.85;
 
 const HONOR_MAP: Record<string, string> = {
   E: "to",
@@ -627,7 +629,8 @@ const getLegalActions = (state: GameState, viewerSeat?: Seat): LegalAction[] => 
       ...(state.players[turnSeat].drawnTile ? [state.players[turnSeat].drawnTile] : [])
     ];
     if (state.players[turnSeat].drawnTile) {
-      if (!state.players[turnSeat].riichi && canClosedKan(hand)) {
+      // リーチ後でも暗カンは候補に出す（加カンは不可）
+      if (canClosedKan(hand)) {
         actions.push({ type: "KAN", by: turnSeat, from: turnSeat, tile: "" });
       }
       const ponTiles = state.players[turnSeat].melds.filter((meld) => meld.kind === "PON").flatMap((meld) => meld.tiles);
@@ -907,6 +910,9 @@ const LeftTools = ({
 type RightPanelProps = {
   showButtons: boolean;
   initialLocked: boolean;
+  onScreenCaptureStart: () => void;
+  screenCaptureDisabled: boolean;
+  screenCaptureActive: boolean;
   onRandomHands: () => void;
   onLogClear: () => void;
   onClearHands: () => void;
@@ -929,6 +935,9 @@ type RightPanelProps = {
 const RightPanel = ({
   showButtons,
   initialLocked,
+  onScreenCaptureStart,
+  screenCaptureDisabled,
+  screenCaptureActive,
   onRandomHands,
   onLogClear,
   onClearHands,
@@ -950,6 +959,9 @@ const RightPanel = ({
     <div className="panel">
       {showButtons && (
         <div className="button-grid">
+          <button className="action-button" onClick={onScreenCaptureStart} disabled={screenCaptureDisabled}>
+            {screenCaptureActive ? "画面共有中" : "画面読み込み"}
+          </button>
           <button className="action-button" onClick={onRandomHands} disabled={initialLocked}>
             ランダム配牌
           </button>
@@ -1476,6 +1488,32 @@ const expectedHandCountBeforeDraw = (player: PlayerState) => {
   return Math.max(13 - player.melds.length * 3, 0);
 };
 
+const calcCaptureTargetSize = (width: number, height: number) => {
+  if (!width || !height) return { width: 0, height: 0 };
+  const edge = Math.max(width, height);
+  if (edge <= CAPTURE_MAX_EDGE) return { width, height };
+  const scale = CAPTURE_MAX_EDGE / edge;
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale))
+  };
+};
+
+const canvasToJpegBlob = (canvas: HTMLCanvasElement) =>
+  new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("画像生成に失敗しました"));
+          return;
+        }
+        resolve(blob);
+      },
+      "image/jpeg",
+      CAPTURE_JPEG_QUALITY
+    );
+  });
+
 const pickRandomAvailableTile = (state: GameState) => {
   const counts = countTilesInState(state);
   const pool: string[] = [];
@@ -1987,6 +2025,10 @@ export const App = () => {
   });
   const setRiichiDiscards = setGameUiField("riichiDiscards");
   const setWinInfo = setGameUiField("winInfo");
+  const captureVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [captureStream, setCaptureStream] = useState<MediaStream | null>(null);
+  const [captureStarting, setCaptureStarting] = useState(false);
+  const [captureAnalyzing, setCaptureAnalyzing] = useState(false);
   const appendActionLog = (lines: string | string[]) => {
     const list = Array.isArray(lines) ? lines : [lines];
     setActionLog((prev) => [...prev, ...list]);
@@ -1997,6 +2039,32 @@ export const App = () => {
     if (!Array.isArray(debug) || debug.length === 0) return;
     appendActionLog(debug);
   };
+  const stopCaptureShare = useCallback(() => {
+    if (!captureStream) return;
+    captureStream.getTracks().forEach((track) => track.stop());
+    setCaptureStream(null);
+  }, [captureStream]);
+
+  useEffect(() => {
+    return () => {
+      captureStream?.getTracks().forEach((track) => track.stop());
+    };
+  }, [captureStream]);
+
+  useEffect(() => {
+    const video = captureVideoRef.current;
+    if (!video || !captureStream) return;
+    video.srcObject = captureStream;
+    void video.play().catch(() => undefined);
+    const [track] = captureStream.getVideoTracks();
+    const onEnded = () => {
+      setCaptureStream(null);
+    };
+    track?.addEventListener("ended", onEnded);
+    return () => {
+      track?.removeEventListener("ended", onEnded);
+    };
+  }, [captureStream]);
   const tenpaiCacheRef = useRef(new Map<string, { waits: TileStr[]; shanten?: number; ok?: boolean; error?: string }>());
 
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -2009,10 +2077,6 @@ export const App = () => {
     active: false,
     firstIndex: null
   });
-  const imageImportRef = useRef<HTMLInputElement | null>(null);
-  const [imageImportSeat, setImageImportSeat] = useState<Seat | null>(null);
-  const imageImportSeatRef = useRef<Seat | null>(null);
-  const [imageImportBusy, setImageImportBusy] = useState(false);
   const defaultWinOptions: WinOptionFlags = {
     is_ippatsu: false,
     is_rinshan: false,
@@ -2044,6 +2108,29 @@ export const App = () => {
   const undoGuardRef = useRef(false);
   const initialRandomizedRef = useRef(false);
   const logInitRef = useRef<GameState | null>(null);
+  const initialHandsRef = useRef<Record<Seat, TileStr[]>>({
+    E: [],
+    S: [],
+    W: [],
+    N: []
+  });
+  const snapshotInitialHands = useCallback((state: GameState) => {
+    initialHandsRef.current = {
+      E: [...(state.players.E.hand ?? [])],
+      S: [...(state.players.S.hand ?? [])],
+      W: [...(state.players.W.hand ?? [])],
+      N: [...(state.players.N.hand ?? [])]
+    };
+  }, []);
+  const setInitialHandForSeat = useCallback((seat: Seat, hand: TileStr[]) => {
+    initialHandsRef.current = {
+      ...initialHandsRef.current,
+      [seat]: [...hand]
+    };
+  }, []);
+  const resetInitialHands = useCallback(() => {
+    initialHandsRef.current = { E: [], S: [], W: [], N: [] };
+  }, []);
   const runImmediate = <T extends unknown[]>(fn: (...args: T) => void) =>
     (...args: T) => {
       flushSync(() => {
@@ -2456,6 +2543,12 @@ export const App = () => {
       W: randomTiles(13),
       N: randomTiles(13)
     };
+    initialHandsRef.current = {
+      E: [...hands.E],
+      S: [...hands.S],
+      W: [...hands.W],
+      N: [...hands.N]
+    };
     const doraIndicators = deck.splice(0, 1);
     const uraIndicators: string[] = [];
     const liveWall = deck.splice(0);
@@ -2474,6 +2567,7 @@ export const App = () => {
   };
 
   const handleClearHands = () => {
+    resetInitialHands();
     if (gameState) {
       setGameState((prev) =>
         prev
@@ -2533,9 +2627,23 @@ export const App = () => {
     const metaPoints = (metaOverrides?.points as Record<Seat, number> | undefined) ?? undefined;
     const metaDora = overrideDora.length > 0 ? overrideDora : step?.doraIndicators ?? [];
     const metaUra: string[] = overrideUra;
-    const mergedHands = hasHandOverrides
+    let mergedHands = hasHandOverrides
       ? mergeHandsForOverrides(overrideBySeat, step?.hands as Record<Seat, TileStr[]> | undefined)
       : undefined;
+    const pendingInitialHands = initialHandsRef.current;
+    if (
+      pendingInitialHands.E.length ||
+      pendingInitialHands.S.length ||
+      pendingInitialHands.W.length ||
+      pendingInitialHands.N.length
+    ) {
+      mergedHands = {
+        E: pendingInitialHands.E.length ? [...pendingInitialHands.E] : mergedHands?.E ?? [...(step?.hands?.E ?? [])],
+        S: pendingInitialHands.S.length ? [...pendingInitialHands.S] : mergedHands?.S ?? [...(step?.hands?.S ?? [])],
+        W: pendingInitialHands.W.length ? [...pendingInitialHands.W] : mergedHands?.W ?? [...(step?.hands?.W ?? [])],
+        N: pendingInitialHands.N.length ? [...pendingInitialHands.N] : mergedHands?.N ?? [...(step?.hands?.N ?? [])]
+      };
+    }
     return {
       hands: mergedHands,
       doraIndicators: metaDora,
@@ -2775,16 +2883,16 @@ export const App = () => {
     });
 
     const initialHands = {
-      E: (initState.players.E.hand ?? [])
+      E: (initialHandsRef.current.E.length ? initialHandsRef.current.E : initState.players.E.hand ?? [])
         .map(tileToLogCode)
         .filter((code): code is number => typeof code === "number"),
-      S: (initState.players.S.hand ?? [])
+      S: (initialHandsRef.current.S.length ? initialHandsRef.current.S : initState.players.S.hand ?? [])
         .map(tileToLogCode)
         .filter((code): code is number => typeof code === "number"),
-      W: (initState.players.W.hand ?? [])
+      W: (initialHandsRef.current.W.length ? initialHandsRef.current.W : initState.players.W.hand ?? [])
         .map(tileToLogCode)
         .filter((code): code is number => typeof code === "number"),
-      N: (initState.players.N.hand ?? [])
+      N: (initialHandsRef.current.N.length ? initialHandsRef.current.N : initState.players.N.hand ?? [])
         .map(tileToLogCode)
         .filter((code): code is number => typeof code === "number")
     };
@@ -2903,6 +3011,7 @@ export const App = () => {
     };
     resetGameUi({ gameState: nextState });
     logInitRef.current = cloneState(nextState);
+    snapshotInitialHands(nextState);
     undoStackRef.current = [];
     setUndoCount(0);
     return nextState;
@@ -2911,6 +3020,7 @@ export const App = () => {
   const handleLogClear = () => {
     resetGameUi();
     logInitRef.current = null;
+    resetInitialHands();
     undoStackRef.current = [];
     setUndoCount(0);
   };
@@ -2976,6 +3086,7 @@ export const App = () => {
         appendActionLog("ツモ牌は手番のみ反映できます");
       }
       if (!(extraTile && seat === turnSeat)) {
+        setInitialHandForSeat(seat, sortTiles(paddedHand));
         setHandOverrides((prev) => {
           const bySeat = { ...(prev[handKey] ?? {}) };
           bySeat[seat] = sortTiles(paddedHand);
@@ -3055,42 +3166,80 @@ export const App = () => {
       phase: nextPhase
     };
     checkTileConservation(nextState, "importImage");
+    if (ensureState.players[seat].discards.length === 0) {
+      setInitialHandForSeat(seat, nextPlayer.hand);
+    }
+    if (logInitRef.current && logInitRef.current.players[seat].discards.length === 0) {
+      logInitRef.current = {
+        ...logInitRef.current,
+        players: {
+          ...logInitRef.current.players,
+          [seat]: {
+            ...logInitRef.current.players[seat],
+            hand: [...nextPlayer.hand],
+            drawnTile: null,
+            drawnFrom: null
+          }
+        }
+      };
+    }
     setGameState(nextState);
   };
 
-  const onImportImage = (seat: Seat) => {
-    setImageImportSeat(seat);
-    imageImportSeatRef.current = seat;
-    if (imageImportRef.current) {
-      imageImportRef.current.value = "";
-      imageImportRef.current.click();
-    }
-  };
+  const startScreenCapture = useCallback(async () => {
+      if (captureStarting || captureAnalyzing) return;
+      if (captureStream) return;
+      setCaptureStarting(true);
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false
+        });
+        setCaptureStream(stream);
+        appendActionLog("画面共有開始");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "画面共有を開始できませんでした";
+        appendActionLog(`画面共有: ${message}`);
+      } finally {
+        setCaptureStarting(false);
+      }
+    }, [appendActionLog, captureAnalyzing, captureStarting, captureStream]);
 
-  const handleImageImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    const seat = imageImportSeatRef.current ?? imageImportSeat;
-    if (!file || !seat || imageImportBusy) {
-      if (!seat) appendActionLog("画像読込: 対象席が未設定です");
-      return;
-    }
-    setImageImportBusy(true);
-    try {
-      const result = await analyzeTilesFromImage(file);
-      if (!result.ok) {
-        appendActionLog(result.error ?? "画像解析に失敗しました");
+  const captureAndAnalyzeForSeat = useCallback(
+    async (seat: Seat) => {
+      if (!captureStream || captureAnalyzing) return;
+      const video = captureVideoRef.current;
+      if (!video || !video.videoWidth || !video.videoHeight) {
+        appendActionLog("画像解析: 映像が準備できていません");
         return;
       }
-      applyDetectedTilesToSeat(seat, result.tiles ?? []);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "画像解析に失敗しました";
-      appendActionLog(message);
-    } finally {
-      setImageImportBusy(false);
-      setImageImportSeat(null);
-      imageImportSeatRef.current = null;
-    }
-  };
+      setCaptureAnalyzing(true);
+      appendActionLog(`${formatSeatForLog(seat)}画像: 解析送信中...`);
+      try {
+        const target = calcCaptureTargetSize(video.videoWidth, video.videoHeight);
+        const canvas = document.createElement("canvas");
+        canvas.width = target.width;
+        canvas.height = target.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("キャンバス初期化に失敗しました");
+        ctx.drawImage(video, 0, 0, target.width, target.height);
+        const blob = await canvasToJpegBlob(canvas);
+        const result = await captureTilesFromImage(blob);
+        if (!result.ok) {
+          throw new Error(result.error ?? "画像解析に失敗しました");
+        }
+        const tiles = result.hand?.tiles ?? [];
+        applyDetectedTilesToSeat(seat, tiles);
+        appendActionLog(`${formatSeatForLog(seat)}画像: 解析完了 (${tiles.length}枚)`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "画像解析に失敗しました";
+        appendActionLog(`${formatSeatForLog(seat)}画像: ${message}`);
+      } finally {
+        setCaptureAnalyzing(false);
+      }
+    },
+    [appendActionLog, applyDetectedTilesToSeat, captureAnalyzing, captureStream]
+  );
 
   const openDoraPicker = (index: number) => {
     setPickerIndex(index);
@@ -3417,6 +3566,23 @@ export const App = () => {
           }
         };
         checkTileConservation(nextState, "editHand");
+        if (player.discards.length === 0) {
+          setInitialHandForSeat(pickerSeat, nextHand);
+        }
+        if (logInitRef.current && logInitRef.current.players[pickerSeat].discards.length === 0) {
+          logInitRef.current = {
+            ...logInitRef.current,
+            players: {
+              ...logInitRef.current.players,
+              [pickerSeat]: {
+                ...logInitRef.current.players[pickerSeat],
+                hand: [...nextHand],
+                drawnTile: null,
+                drawnFrom: null
+              }
+            }
+          };
+        }
         setGameState(nextState);
         if (shouldBatch) {
           const nextIdx = nextPlaceholderIndex(nextHand);
@@ -3470,7 +3636,7 @@ export const App = () => {
         bySeat[pickerSeat] = nextHand;
         return { ...prev, [handKey]: bySeat };
       });
-      setMetaOverrides((prev) => ({ ...(prev ?? {}), liveWall: [], deadWall: [] }));
+      setInitialHandForSeat(pickerSeat, nextHand);
       setMetaOverrides((prev) => ({ ...(prev ?? {}), liveWall: [], deadWall: [] }));
       if (shouldBatch) {
         const nextIdx = nextPlaceholderIndex(nextHand);
@@ -4227,7 +4393,6 @@ export const App = () => {
     pushUndo();
     const seat = gameState.turn;
     const player = gameState.players[seat];
-    if (player.riichi) return;
     const workingHand = player.drawnTile ? [...player.hand, player.drawnTile] : [...player.hand];
     const counts: Record<string, number> = {};
     workingHand.forEach((tile) => {
@@ -4236,7 +4401,9 @@ export const App = () => {
       counts[key] = (counts[key] ?? 0) + 1;
     });
     const closedTarget = Object.keys(counts).find((tile) => counts[tile] >= 4) ?? null;
-    const addedTarget = closedTarget ? null : pickAddedKanTile(workingHand, player.melds);
+    // リーチ後は暗カンのみ可（加カンは不可）
+    const addedTarget =
+      player.riichi || closedTarget ? null : pickAddedKanTile(workingHand, player.melds);
     if (!closedTarget && !addedTarget) return;
 
     let nextHand = workingHand;
@@ -4379,6 +4546,9 @@ export const App = () => {
   const rightPanelProps = {
     showButtons: true,
     initialLocked,
+    onScreenCaptureStart: startScreenCapture,
+    screenCaptureDisabled: captureStarting || captureAnalyzing || Boolean(captureStream),
+    screenCaptureActive: Boolean(captureStream),
     onRandomHands: runImmediate(handleRandomHands),
     onLogClear: runImmediate(handleLogClear),
     onClearHands: runImmediate(handleClearHands),
@@ -4399,6 +4569,21 @@ export const App = () => {
 
   const buildSeatActions = useCallback((seat: Seat, player: PlayerState) => {
     const actions: SeatAction[] = [];
+    if (captureStream) {
+      actions.push({
+        key: "capture-run",
+        label: captureAnalyzing ? "解析中..." : "キャプチャ",
+        onClick: () => captureAndAnalyzeForSeat(seat),
+        disabled: captureAnalyzing || captureStarting
+      });
+      actions.push({
+        key: "capture-stop",
+        label: "共有終了",
+        onClick: stopCaptureShare,
+        disabled: captureAnalyzing
+      });
+    }
+
     if (!gameState) return actions;
     if (pendingRinshan === seat) return actions;
     if (gameState.phase === "AFTER_DRAW_MUST_DISCARD" && gameState.turn === seat) {
@@ -4433,6 +4618,11 @@ export const App = () => {
     return actions;
   }, [
     gameState,
+    captureAnalyzing,
+    captureStarting,
+    captureStream,
+    captureAndAnalyzeForSeat,
+    stopCaptureShare,
     pendingRinshan,
     riichiAllowed,
     pendingRiichi,
@@ -4544,13 +4734,7 @@ export const App = () => {
 
   return (
     <div className="app-shell">
-      <input
-        ref={imageImportRef}
-        type="file"
-        accept="image/*"
-        onChange={handleImageImport}
-        style={{ display: "none" }}
-      />
+      <video ref={captureVideoRef} className="screen-capture-video" playsInline muted />
       <SeatSummaryBar
         items={seatSummaryItems}
         tileToAsset={tileToAsset}
@@ -4574,8 +4758,6 @@ export const App = () => {
                 onHandTileContextMenu={handleHandTileContextMenu}
                 onDrawTileClick={handleDrawTileClick}
                 showDrawPlaceholder={canSelectDrawTile(item.seat)}
-                onImportImage={onImportImage}
-                importDisabled={imageImportBusy}
                 tileToAsset={tileToAsset}
                 tileBack={TILE_BACK}
                 tilePlaceholder={TILE_PLACEHOLDER}
