@@ -4,15 +4,16 @@ from pathlib import Path
 import json
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
+import tempfile
 
 from mahjong.constants import EAST, SOUTH, WEST, NORTH
-from mj.calcHand import analyze_hand as calc_analyze_hand
-from mj.machi import machi_hai_13
-from mj.utils import ALL_TILES
-from mj.toMelds import convert_to_melds
+from mahjong_runtime.calcHand import analyze_hand as calc_analyze_hand
+from mahjong_runtime.machi import machi_hai_13
+from mahjong_runtime.utils import ALL_TILES
+from mahjong_runtime.toMelds import convert_to_melds
 
 HONOR_MAP = {
     "E": "to",
@@ -94,6 +95,39 @@ def _load_sample() -> dict:
     return json.loads(text)
 
 
+def _resolve_weights_path() -> Path:
+    repo_root = _repo_root()
+    candidates = [
+        repo_root / "mahjong_runtime" / "weights" / "best.pt",
+        # backward-compat for older layout
+        repo_root / "mj" / "weights" / "best.pt",
+        # backward-compat for older layout
+        repo_root / "mj" / "models" / "tehai" / "weights" / "best.pt",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return Path("best.pt")
+
+
+def _normalize_detected_tile(name: str) -> str:
+    if not name:
+        return ""
+    text = str(name).strip()
+    if " " in text:
+        text = text.split()[-1]
+    if "-" in text and len(text) > 2:
+        text = text.split("-")[-1].strip()
+    return HONOR_MAP_REVERSE.get(text, text)
+
+
+def _safe_float(value) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 def _validate_kifu(data: dict) -> tuple[bool, list[str]]:
     try:
         # Pydantic v1
@@ -148,22 +182,25 @@ def analyze_hand_api(payload: dict) -> dict:
             return dragon_cycle[dragon_cycle.index(t) + 1]
         return t
 
+    debug_lines: list[str] = []
+
+    def debug_enabled() -> bool:
+        return bool(payload.get("debug"))
+
+    def debug_log(message: str) -> None:
+        if debug_enabled():
+            debug_lines.append(f"[analyze_hand] {message}")
+
     try:
         hand_tiles = normalize_tiles(payload.get("hand", []))
         win_tile = normalize_tile(payload.get("winTile"))
         melds_payload = payload.get("melds", [])
-        meld_tile_count = sum(len(m.get("tiles", [])) for m in melds_payload if isinstance(m, dict))
-        total_tiles = len(hand_tiles) + meld_tile_count + (1 if win_tile else 0)
-        if win_tile and total_tiles > 14:
-            # remove one instance of win tile if it's already inside the hand
-            for i, t in enumerate(hand_tiles):
-                if t == win_tile:
-                    hand_tiles.pop(i)
-                    break
         all_tiles = [*hand_tiles, *([win_tile] if win_tile else [])]
         actions = []
         for meld in melds_payload:
             kind = meld.get("kind", "").lower()
+            if kind in ("minkan", "ankan", "kakan", "shouminkan"):
+                kind = "kan"
             if kind not in ("chi", "pon", "kan"):
                 continue
             tiles = [normalize_tile(t) for t in meld.get("tiles", []) if t]
@@ -181,6 +218,8 @@ def analyze_hand_api(payload: dict) -> dict:
                 target_tiles[0]["fromOther"] = True
             actions.append({"target_tiles": target_tiles, "action_type": kind})
             all_tiles.extend([t for t in tiles if t])
+        debug_log(f"hand={hand_tiles} win={win_tile} melds={len(melds_payload)}")
+        debug_log(f"actions={actions}")
 
         # validate tiles before scoring to avoid server error
         def _base_key(tile: str) -> str:
@@ -192,7 +231,7 @@ def analyze_hand_api(payload: dict) -> dict:
 
         for t in all_tiles:
             if t not in ALL_TILES:
-                return {"ok": False, "error": f"invalid tile: {t}"}
+                return {"ok": False, "error": f"invalid tile: {t}", "debug": debug_lines if debug_enabled() else None}
         counts: dict[str, int] = {}
         red_counts: dict[str, int] = {}
         for t in all_tiles:
@@ -202,38 +241,120 @@ def analyze_hand_api(payload: dict) -> dict:
                 red_counts[t] = red_counts.get(t, 0) + 1
         for base, cnt in counts.items():
             if cnt > 4:
-                return {"ok": False, "error": f"tile overflow: {base} x{cnt}"}
+                return {
+                    "ok": False,
+                    "error": f"tile overflow: {base} x{cnt}",
+                    "debug": debug_lines if debug_enabled() else None
+                }
         for red, cnt in red_counts.items():
             if cnt > 1:
-                return {"ok": False, "error": f"red overflow: {red} x{cnt}"}
+                return {
+                    "ok": False,
+                    "error": f"red overflow: {red} x{cnt}",
+                    "debug": debug_lines if debug_enabled() else None
+                }
 
         melds = convert_to_melds(actions) if actions else []
+        is_riichi = bool(
+            payload.get("riichi", False)
+            or payload.get("is_riichi", False)
+            or payload.get("is_daburu_riichi", False)
+            or payload.get("is_open_riichi", False)
+        )
+        is_ippatsu = bool(payload.get("ippatsu", False) or payload.get("is_ippatsu", False))
         dora_indicators = normalize_tiles(payload.get("doraIndicators", []))
+        ura_indicators = normalize_tiles(payload.get("uraDoraIndicators", []))
+        if is_riichi:
+            dora_indicators = [*dora_indicators, *ura_indicators]
         dora_tiles = [dora_from_indicator(t) for t in dora_indicators if t]
         seat_wind = payload.get("seatWind", "E")
         round_wind = payload.get("roundWind", "E")
         win_type = payload.get("winType", "ron")
 
+        meld_tiles_for_calc: list[str] = []
+        kan_count = 0
+        for act in actions:
+            target_tiles = act.get("target_tiles", [])
+            if act.get("action_type") == "kan" and len(target_tiles) >= 4:
+                kan_count += 1
+            for info in target_tiles:
+                tile = info.get("tile")
+                if tile:
+                    meld_tiles_for_calc.append(tile)
+        hand_tiles_for_calc = hand_tiles
+        tiles_for_calc = [*hand_tiles_for_calc, *meld_tiles_for_calc]
+        expected_total = 14 + kan_count
+        if win_tile and len(tiles_for_calc) < expected_total:
+            tiles_for_calc.append(win_tile)
+        debug_log(
+            f"meld_tiles={len(meld_tiles_for_calc)} hand_tiles_for_calc={len(hand_tiles_for_calc)} "
+            f"tiles_for_calc={len(tiles_for_calc)} expected_total={expected_total} has_aka={has_aka(all_tiles)}"
+        )
+        debug_log(f"hand_for_calc={hand_tiles_for_calc}")
+
+        is_rinshan = bool(payload.get("is_rinshan", False))
+        is_chankan = bool(payload.get("is_chankan", False))
+        is_haitei = bool(payload.get("is_haitei", False))
+        is_houtei = bool(payload.get("is_houtei", False))
+        is_daburu_riichi = bool(payload.get("is_daburu_riichi", False))
+        is_nagashi_mangan = bool(payload.get("is_nagashi_mangan", False))
+        is_tenhou = bool(payload.get("is_tenhou", False))
+        is_renhou = bool(payload.get("is_renhou", False))
+        is_chiihou = bool(payload.get("is_chiihou", False))
+        is_open_riichi = bool(payload.get("is_open_riichi", False))
+        try:
+            paarenchan = int(payload.get("paarenchan", 0) or 0)
+        except (TypeError, ValueError):
+            paarenchan = 0
         _, _, result = calc_analyze_hand(
-            tiles=hand_tiles,
+            tiles=tiles_for_calc,
             win=win_tile,
             melds=melds,
             doras=dora_tiles,
             has_aka=has_aka(all_tiles),
             is_tsumo=win_type == "tsumo",
-            is_riichi=payload.get("riichi", False),
-            is_ippatsu=payload.get("ippatsu", False),
+            is_riichi=is_riichi,
+            is_ippatsu=is_ippatsu,
+            is_rinshan=is_rinshan,
+            is_chankan=is_chankan,
+            is_haitei=is_haitei,
+            is_houtei=is_houtei,
+            is_daburu_riichi=is_daburu_riichi,
+            is_nagashi_mangan=is_nagashi_mangan,
+            is_tenhou=is_tenhou,
+            is_renhou=is_renhou,
+            is_chiihou=is_chiihou,
+            is_open_riichi=is_open_riichi,
+            paarenchan=paarenchan,
             player_wind=WIND_MAP.get(seat_wind, EAST),
             round_wind=WIND_MAP.get(round_wind, EAST),
             kyoutaku_number=payload.get("riichiSticks", 0),
             tsumi_number=payload.get("honba", 0),
         )
 
+        if getattr(result, "error", None):
+            return {
+                "ok": False,
+                "error": getattr(result, "error", ""),
+                "debug": debug_lines if debug_enabled() else None
+            }
         yaku_list = []
         if getattr(result, "yaku", None):
             for y in result.yaku:
                 name = getattr(y, "name", None)
-                yaku_list.append(name if name is not None else str(y))
+                if name is None:
+                    yaku_list.append(str(y))
+                    continue
+                if "Dora" in name:
+                    han_open = getattr(y, "han_open", None)
+                    han_closed = getattr(y, "han_closed", None)
+                    count = han_open if isinstance(han_open, int) else None
+                    if isinstance(han_closed, int):
+                        count = han_closed
+                    if isinstance(count, int) and count > 1:
+                        yaku_list.extend([name] * count)
+                        continue
+                yaku_list.append(name)
         return {
             "ok": True,
             "result": {
@@ -242,9 +363,10 @@ def analyze_hand_api(payload: dict) -> dict:
                 "cost": getattr(result, "cost", None),
                 "yaku": yaku_list,
             },
+            "debug": debug_lines if debug_enabled() else None
         }
     except Exception as exc:  # pragma: no cover - guard for unexpected input
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), "debug": debug_lines if debug_enabled() else None}
 
 
 @app.post("/analysis/tenpai")
@@ -271,38 +393,10 @@ def analyze_tenpai(payload: dict) -> dict:
 
     try:
         hand_tiles = [normalize_for_tenpai(t) for t in normalize_tiles(payload.get("hand", []))]
-        melds_payload = payload.get("melds", [])
-        actions = []
-        for meld in melds_payload:
-            kind = meld.get("kind", "").lower()
-            if kind not in ("chi", "pon", "kan"):
-                continue
-            tiles = [normalize_for_tenpai(normalize_tile(t)) for t in meld.get("tiles", []) if t]
-            called_tile = normalize_for_tenpai(normalize_tile(meld.get("calledTile")))
-            called_from = meld.get("calledFrom")
-            target_tiles = []
-            used_called = False
-            for t in tiles:
-                from_other = False
-                if called_from and called_tile and t == called_tile and not used_called:
-                    from_other = True
-                    used_called = True
-                target_tiles.append({"tile": t, "fromOther": from_other})
-            if called_from and not used_called and target_tiles:
-                target_tiles[0]["fromOther"] = True
-            actions.append({"target_tiles": target_tiles, "action_type": kind})
+        if len(hand_tiles) > 13:
+            hand_tiles = hand_tiles[:13]
 
-        melds = convert_to_melds(actions) if actions else []
-        combined_tiles = [*hand_tiles]
-        for act in actions:
-            for info in act.get("target_tiles", []):
-                tile = info.get("tile")
-                if tile:
-                    combined_tiles.append(tile)
-        if len(combined_tiles) > 13:
-            combined_tiles = combined_tiles[:13]
-
-        result = machi_hai_13(combined_tiles)
+        result = machi_hai_13(hand_tiles)
         if isinstance(result, str):
             if result == "agari":
                 return {"ok": True, "status": "agari", "shanten": -1, "waits": []}
@@ -316,4 +410,35 @@ def analyze_tenpai(payload: dict) -> dict:
         waits = [denormalize_tile(tile) for tile in result]
         return {"ok": True, "status": "tenpai", "shanten": 0, "waits": waits}
     except Exception as exc:  # pragma: no cover - guard for unexpected input
+        return {"ok": False, "error": str(exc)}
+
+
+@app.post("/analysis/tiles-from-image")
+async def tiles_from_image(image: UploadFile = File(...)) -> dict:
+    try:
+        from mahjong_runtime.myyolo import MYYOLO
+
+        weights_path = _resolve_weights_path()
+        if not weights_path.exists():
+            return {"ok": False, "error": f"weights not found: {weights_path}"}
+        if not image.filename:
+            return {"ok": False, "error": "no image uploaded"}
+        suffix = Path(image.filename).suffix or ".png"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(await image.read())
+            tmp_path = tmp.name
+        tile_infos, tile_names = MYYOLO(model_path=str(weights_path), image_path=tmp_path)
+        normalized = [_normalize_detected_tile(name) for name in tile_names if name]
+        normalized = [t for t in normalized if t]
+        safe_infos = []
+        for info in tile_infos:
+            safe_infos.append(
+                {
+                    "class": info.get("class"),
+                    "conf": _safe_float(info.get("conf")),
+                    "point": _safe_float(info.get("point")),
+                }
+            )
+        return {"ok": True, "tiles": normalized, "raw": tile_names, "infos": safe_infos}
+    except Exception as exc:  # pragma: no cover
         return {"ok": False, "error": str(exc)}
