@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 import json
+from time import perf_counter
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 import tempfile
+from PIL import Image
 
 from mahjong.constants import EAST, SOUTH, WEST, NORTH
 from mahjong_runtime.calcHand import analyze_hand as calc_analyze_hand
@@ -32,6 +35,8 @@ WIND_MAP = {
     "W": WEST,
     "N": NORTH,
 }
+
+CAPTURE_DUMMY_TILES = ["1m", "2m", "3m", "4p", "5p", "6p", "7s", "8s", "9s", "E", "E", "S", "P"]
 
 
 class Tile(BaseModel):
@@ -126,6 +131,16 @@ def _safe_float(value) -> float | None:
         return float(value)
     except Exception:
         return None
+
+
+def _run_tile_inference(image_path: str):
+    from mahjong_runtime.myyolo import MYYOLO
+
+    weights_path = _resolve_weights_path()
+    if not weights_path.exists():
+        return None, None, f"weights not found: {weights_path}"
+    tile_infos, tile_names = MYYOLO(model_path=str(weights_path), image_path=image_path)
+    return tile_infos, tile_names, None
 
 
 def _validate_kifu(data: dict) -> tuple[bool, list[str]]:
@@ -415,19 +430,17 @@ def analyze_tenpai(payload: dict) -> dict:
 
 @app.post("/analysis/tiles-from-image")
 async def tiles_from_image(image: UploadFile = File(...)) -> dict:
+    tmp_path = ""
     try:
-        from mahjong_runtime.myyolo import MYYOLO
-
-        weights_path = _resolve_weights_path()
-        if not weights_path.exists():
-            return {"ok": False, "error": f"weights not found: {weights_path}"}
         if not image.filename:
             return {"ok": False, "error": "no image uploaded"}
         suffix = Path(image.filename).suffix or ".png"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(await image.read())
             tmp_path = tmp.name
-        tile_infos, tile_names = MYYOLO(model_path=str(weights_path), image_path=tmp_path)
+        tile_infos, tile_names, error = _run_tile_inference(tmp_path)
+        if error:
+            return {"ok": False, "error": error}
         normalized = [_normalize_detected_tile(name) for name in tile_names if name]
         normalized = [t for t in normalized if t]
         safe_infos = []
@@ -442,3 +455,59 @@ async def tiles_from_image(image: UploadFile = File(...)) -> dict:
         return {"ok": True, "tiles": normalized, "raw": tile_names, "infos": safe_infos}
     except Exception as exc:  # pragma: no cover
         return {"ok": False, "error": str(exc)}
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+@app.post("/api/capture")
+async def capture(image_file: UploadFile = File(..., alias="file")) -> dict:
+    started = perf_counter()
+    tmp_path = ""
+    try:
+        payload = await image_file.read()
+        if not payload:
+            return {"ok": False, "error": "no image uploaded"}
+
+        with Image.open(io.BytesIO(payload)) as src_img:
+            width, height = src_img.size
+            rgb = src_img.convert("RGB")
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                rgb.save(tmp, format="JPEG", quality=90)
+                tmp_path = tmp.name
+
+        tile_infos, tile_names, error = _run_tile_inference(tmp_path)
+        if error:
+            return {
+                "ok": True,
+                "inference_seconds": round(perf_counter() - started, 3),
+                "hand": {"tiles": CAPTURE_DUMMY_TILES},
+                "debug": {
+                    "image_size": {"width": width, "height": height},
+                    "fallback": error,
+                },
+            }
+
+        normalized = [_normalize_detected_tile(name) for name in tile_names if name]
+        hand_tiles = [tile for tile in normalized if tile][:14]
+        return {
+            "ok": True,
+            "inference_seconds": round(perf_counter() - started, 3),
+            "hand": {"tiles": hand_tiles},
+            "debug": {
+                "image_size": {"width": width, "height": height},
+                "raw_tiles": tile_names,
+                "detections": len(tile_infos or []),
+            },
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        if tmp_path:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass

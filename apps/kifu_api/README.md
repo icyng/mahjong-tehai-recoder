@@ -21,3 +21,4 @@ uv run apps/tehai_recorder.py api
 - `POST /analysis/hand`
 - `POST /analysis/tenpai`
 - `POST /analysis/tiles-from-image`
+- `POST /api/capture`
