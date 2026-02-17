@@ -3,15 +3,32 @@ runs*/
 res/
 show*/
 
+node_modules/
+
 weights/
 *.egg-info/
 __pycache__/
 
 *.pt
+*.jpg
 *.env
 *.mp4
+mangan_over_table.md
+yaku_en_ja.md
 .DS_Store
-res.txt
-pai.jpg
 
-node_modules/
+# --- release safety (large/sensitive local assets) ---
+apps/kifu_ui/dist/
+hand_sample.png
+test.mp4
+
+# training artifacts (keep local or move to another private repo)
+mj/models/tehai/dataset/
+mj/models/tehai/runs_mj/
+mj/models/tehai/showcase/
+mj/models/tehai/yolov12*.pt
+
+# legacy large media files
+result.png
+res_v08n.png
+res_v12m.png

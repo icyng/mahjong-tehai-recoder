@@ -1,0 +1,25 @@
+.DS_Store
+.git
+.gitignore
+.venv
+.uv-cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+apps/kifu_ui/node_modules
+apps/kifu_ui/dist
+apps/kifu_api/.env
+*.log
+test.mp4
+hand_sample.png
+
+# training artifacts and examples (not needed at runtime)
+mj/models/tehai/dataset
+mj/models/tehai/runs_mj
+mj/models/tehai/showcase
+mj/models/tehai/yolov12*.pt
+
+# keep only runtime inference weight
+mj/models/tehai/weights/*
+!mj/models/tehai/weights/best.pt
