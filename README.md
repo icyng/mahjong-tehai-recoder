@@ -1,48 +1,46 @@
-# 麻雀手牌解析ツール
+# 麻雀記録app
 
-画像認識を利用して手牌画像から牌情報を抽出し、点数計算まで行う
+ブラウザから牌譜入力を行うツール
 
-## ⚠️ Warning
+## 機能
 
-macOS での動作を想定、Windows の場合は以下を遵守：
+- 画像解析による初期手牌入力
+- 副露・聴牌・和了判定
+- 役・点数計算
+- ログ出力（天鳳対応）
 
-```
+## 環境
+
+mac での動作を想定：
+
+```bash
 > python --version
 3.10.8
 
+# cuda使用時
 > uv pip list
 torch==2.7.1+cu118
 torchaudio==2.7.1+cu118
 torchvision==0.22.1+cu118
 ```
 
-## Setup
-
-管理は `uv` 、アノテーションは `roboflow` 、pre-trained モデルは YOLOv12m
+## Setup（開発）
 
 ```bash
 uv sync
 uv pip install -e .
+cd apps/kifu_ui && npm ci
 ```
 
-## SAMPLE(YOLOv12m)
+## 起動（開発）
 
-![res](./result.png)
+`tehai_recorder` をlauncherとして利用
 
 ```bash
-> uv run usage.py
-
-...
-
-待ち：['3p']
-
-@自家手牌 : ['987', '245578903', '99', '']
-@アガリ牌 : 3p
-@ツモ : 5翻 40符 2000 4000
-@役 : [Menzen Tsumo, Riichi, Dora 3]
-@符詳細 : 
-{'fu': 20, 'reason': 'base'}
-{'fu': 8, 'reason': 'closed_terminal_pon'}
-{'fu': 2, 'reason': 'kanchan'}
-{'fu': 2, 'reason': 'tsumo'}
+uv run apps/tehai_recorder.py dev
 ```
+
+## 補足
+
+- NAS 運用想定の Docker 構成手順は `deploy/README.md` を参照すること
+- 学習/検証向けの補助スクリプトやデータセットは非公開
