@@ -6,9 +6,9 @@ NASで常時起動したWebへアクセスする構成
 
 - `web`:
   - React + Nginx
-  - `/analysis/*` と `/kifu/*` を `api` へプロキシ
+  - `/analysis/*` `/kifu/*` `/api/*` を `api` へプロキシ
 - `api`:
-  - FastAPI (`/analysis/hand`, `/analysis/tenpai`, `/analysis/tiles-from-image`)
+  - FastAPI (`/analysis/hand`, `/analysis/tenpai`, `/analysis/tiles-from-image`, `/api/capture`)
   - YOLO 推論（`mahjong_runtime/weights/best.pt` 利用）
 
 ## 初回セットアップ
