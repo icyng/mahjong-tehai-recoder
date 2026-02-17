@@ -1,7 +1,23 @@
-import { type CSSProperties, Fragment, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { flushSync } from "react-dom";
-
-type Seat = "E" | "S" | "W" | "N";
+import type { Seat, TileStr, SeatAction } from "./ui/types";
+import { SeatSummaryBar } from "./components/SeatSummaryBar";
+import { SeatBlock } from "./components/SeatBlock";
+import { MeldTiles } from "./components/MeldTiles";
+import { useSeatViewModel } from "./hooks/useSeatViewModel";
+import {
+  buildJapaneseYakuList,
+  computeDoraCountsForWin,
+  formatScoreSummaryForLog,
+  getDoraDisplayTiles,
+  getDoraIndicators,
+  getLimitTier,
+  getUraDoraIndicators,
+  rebuildDoraYakuList,
+  type DoraCounts
+} from "./lib/score_utils";
+import { analyzeTilesFromImage, postTenpai, scoreWin, type TenpaiResponse, type WinPayload } from "./lib/mahjong_api";
 
 type Step = {
   index: number;
@@ -29,13 +45,12 @@ type Kifu = {
   rounds: Round[];
 };
 
-const TILE_W = 28;
-const TILE_H = 36;
-const SMALL_TILE_W = 24;
-const SMALL_TILE_H = 32;
+const TILE_W = 36;
+const TILE_H = 48;
 const MELD_TILE_W = 20;
 const MELD_TILE_H = 28;
 const TOTAL_TILES = 136;
+const SCORE_DEBUG = false;
 
 const HONOR_MAP: Record<string, string> = {
   E: "to",
@@ -92,6 +107,36 @@ const WIND_LABELS: Record<Seat, string> = {
   W: "西",
   N: "北"
 };
+
+const WIND_ORDER: Seat[] = ["E", "S", "W", "N"];
+const KYOKU_TO_SEAT: Seat[] = ["E", "S", "W", "N"];
+
+const getDealerFromKyoku = (kyoku: number) => {
+  const idx = Math.max(1, kyoku) - 1;
+  return KYOKU_TO_SEAT[idx % 4];
+};
+
+const roundIndexFromMeta = (wind: Seat, kyoku: number) => {
+  const windIdx = Math.max(0, WIND_ORDER.indexOf(wind));
+  const kyokuIdx = Math.max(0, Math.min(3, (kyoku ?? 1) - 1));
+  return windIdx * 4 + kyokuIdx;
+};
+
+const roundMetaFromIndex = (index: number) => {
+  const safe = Math.max(0, Math.min(15, index));
+  const wind = WIND_ORDER[Math.floor(safe / 4)] ?? "E";
+  const kyoku = (safe % 4) + 1;
+  return { wind, kyoku };
+};
+
+const ROUND_OPTIONS = WIND_ORDER.flatMap((wind) =>
+  [1, 2, 3, 4].map((kyoku) => ({
+    value: roundIndexFromMeta(wind, kyoku),
+    wind,
+    kyoku,
+    label: `${WIND_LABELS[wind]}${kyoku}局`
+  }))
+);
 
 const suitTiles = (suit: string) =>
   ["1", "2", "3", "4", "5", "0", "6", "7", "8", "9"].map((n) => `${n}${suit}`);
@@ -263,14 +308,72 @@ const buildTileDeck = () => {
   return deck;
 };
 
+const cloneState = <T,>(value: T): T => {
+  const cloner = (globalThis as typeof globalThis & { structuredClone?: <U>(v: U) => U }).structuredClone;
+  if (typeof cloner === "function") {
+    return cloner(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const LOG_TOKEN_TO_TILE: Record<string, TileStr> = {
+  ton: "E",
+  nan: "S",
+  sha: "W",
+  pei: "N",
+  hak: "P",
+  hat: "F",
+  chu: "C"
+};
+
+const tileToLogCode = (tile: TileStr): number | null => {
+  const canon = canonicalTile(tile);
+  if (!canon || canon === TILE_BACK || canon === TILE_PLACEHOLDER) return null;
+  if (canon.startsWith("0") && canon.length === 2) {
+    const suit = canon[1];
+    return suit === "m" ? 51 : suit === "p" ? 52 : suit === "s" ? 53 : null;
+  }
+  if (canon.length === 2 && ["m", "p", "s"].includes(canon[1])) {
+    const suitBase = canon[1] === "m" ? 10 : canon[1] === "p" ? 20 : 30;
+    return suitBase + Number(canon[0]);
+  }
+  if (canon.length === 1) {
+    switch (canon) {
+      case "E":
+        return 41;
+      case "S":
+        return 42;
+      case "W":
+        return 43;
+      case "N":
+        return 44;
+      case "P":
+        return 45;
+      case "F":
+        return 46;
+      case "C":
+        return 47;
+      default:
+        return null;
+    }
+  }
+  return null;
+};
+
+const logTokenToTile = (token: string): TileStr | null => {
+  if (!token) return null;
+  if (LOG_TOKEN_TO_TILE[token]) return LOG_TOKEN_TO_TILE[token];
+  if (/^0[ mps]$/i.test(token)) return canonicalTile(token);
+  if (/^[1-9][mps]$/i.test(token)) return canonicalTile(token);
+  return null;
+};
+
 const shuffleInPlace = (arr: string[]) => {
   for (let i = arr.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
 };
-
-type TileStr = string;
 
 type Meld = {
   kind: "CHI" | "PON" | "KAN" | "ANKAN" | "MINKAN" | "KAKAN";
@@ -523,12 +626,14 @@ const getLegalActions = (state: GameState, viewerSeat?: Seat): LegalAction[] => 
       ...state.players[turnSeat].hand,
       ...(state.players[turnSeat].drawnTile ? [state.players[turnSeat].drawnTile] : [])
     ];
-    if (!state.players[turnSeat].riichi && canClosedKan(hand)) {
-      actions.push({ type: "KAN", by: turnSeat, from: turnSeat, tile: "" });
-    }
-    const ponTiles = state.players[turnSeat].melds.filter((meld) => meld.kind === "PON").flatMap((meld) => meld.tiles);
-    if (!state.players[turnSeat].riichi && ponTiles.length && canAddedKan(hand, ponTiles)) {
-      actions.push({ type: "KAN", by: turnSeat, from: turnSeat, tile: "" });
+    if (state.players[turnSeat].drawnTile) {
+      if (!state.players[turnSeat].riichi && canClosedKan(hand)) {
+        actions.push({ type: "KAN", by: turnSeat, from: turnSeat, tile: "" });
+      }
+      const ponTiles = state.players[turnSeat].melds.filter((meld) => meld.kind === "PON").flatMap((meld) => meld.tiles);
+      if (!state.players[turnSeat].riichi && ponTiles.length && canAddedKan(hand, ponTiles)) {
+        actions.push({ type: "KAN", by: turnSeat, from: turnSeat, tile: "" });
+      }
     }
   } else if (state.phase === "AWAITING_CALL" && state.lastDiscard) {
     const { seat: discarder, tile } = state.lastDiscard;
@@ -551,20 +656,33 @@ const getLegalActions = (state: GameState, viewerSeat?: Seat): LegalAction[] => 
   return actions.filter((action) => action.by === viewerSeat);
 };
 
-const validateState = (state: GameState, pendingRinshanSeat?: Seat | null): string[] => {
+const validateState = (state: GameState): string[] => {
   const errors: string[] = [];
   SEATS.forEach((seat) => {
     const player = state.players[seat];
     const handCount = countNonEmptyTiles(player.hand);
     const drawnCount = player.drawnTile && player.drawnFrom !== "CALL" ? 1 : 0;
-    const meldTileCount = player.melds.reduce((sum, meld) => sum + (meld.tiles?.length ?? 0), 0);
-    const totalHeld = handCount + drawnCount + meldTileCount;
-    let expectedTotal = state.phase === "AFTER_DRAW_MUST_DISCARD" && seat === state.turn ? 14 : 13;
-    if (pendingRinshanSeat && pendingRinshanSeat === seat && !player.drawnTile) {
-      expectedTotal = 13;
-    }
-    if (totalHeld !== expectedTotal && state.phase !== "ENDED") {
-      errors.push(`${seat}の枚数が${totalHeld}枚です（期待: ${expectedTotal}枚）`);
+    const meldUsedFromHand = player.melds.reduce((sum, meld) => {
+      switch (meld.kind) {
+        case "CHI":
+        case "PON":
+          return sum + 2;
+        case "MINKAN":
+          return sum + 3;
+        case "ANKAN":
+          return sum + 4;
+        case "KAKAN":
+          return sum + 3;
+        case "KAN":
+          return sum + 3;
+        default:
+          return sum;
+      }
+    }, 0);
+    const base = state.phase === "AFTER_DRAW_MUST_DISCARD" && seat === state.turn ? 14 : 13;
+    const expectedBase = Math.max(base - meldUsedFromHand, 0);
+    if (handCount + drawnCount !== expectedBase && state.phase !== "ENDED") {
+      errors.push(`${seat}の枚数が${handCount + drawnCount}枚です（期待: ${expectedBase}枚）`);
     }
     if (player.riichi && !player.closed) {
       errors.push(`${seat}が副露後にリーチしています`);
@@ -583,34 +701,10 @@ const validateState = (state: GameState, pendingRinshanSeat?: Seat | null): stri
   return errors;
 };
 
-type TenpaiResponse = {
-  ok: boolean;
-  status?: string;
-  shanten?: number;
-  waits?: TileStr[];
-  error?: string;
-};
-
 const normalizeHandForTenpai = (hand: TileStr[]) =>
   hand
     .filter((tile) => tile && tile !== "BACK")
     .map((tile) => canonicalTile(tile));
-
-const postTenpai = async (hand: TileStr[], melds: any[] = [], timeoutMs = 5000) => {
-  const payload = { hand, melds };
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const res = await fetch("http://localhost:8000/analysis/tenpai", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    signal: controller.signal
-  }).finally(() => clearTimeout(timeoutId));
-  if (!res.ok) {
-    throw new Error(`tenpai request failed: ${res.status}`);
-  }
-  return (await res.json()) as TenpaiResponse;
-};
 
 const fetchTenpai = async (hand: TileStr[], melds: any[] = [], timeoutMs = 5000) => {
   const canonicalHand = hand.filter((tile) => tile && tile !== "BACK").map((tile) => canonicalTile(tile));
@@ -626,36 +720,24 @@ const fetchTenpai = async (hand: TileStr[], melds: any[] = [], timeoutMs = 5000)
   }
 };
 
-type WinPayload = {
-  hand: TileStr[];
-  melds: Meld[];
-  winTile: TileStr;
-  winType: "ron" | "tsumo";
-  isClosed: boolean;
-  riichi: boolean;
-  ippatsu: boolean;
-  roundWind: Seat;
-  seatWind: Seat;
-  doraIndicators: TileStr[];
-  uraDoraIndicators: TileStr[];
-  honba: number;
-  riichiSticks: number;
-  dealer: boolean;
-  menzenTsumo?: boolean;
+type WinOptionFlags = {
+  is_ippatsu: boolean;
+  is_rinshan: boolean;
+  is_chankan: boolean;
+  is_haitei: boolean;
+  is_houtei: boolean;
+  is_daburu_riichi: boolean;
+  is_nagashi_mangan: boolean;
+  is_tenhou: boolean;
+  is_renhou: boolean;
+  is_chiihou: boolean;
+  is_open_riichi: boolean;
+  paarenchan: boolean;
+  doraCount: number;
+  uraCount: number;
+  akaCount: number;
 };
 
-const scoreWin = async (payload: WinPayload) => {
-  const res = await fetch("http://localhost:8000/analysis/hand", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    console.warn(`scoreWin failed: ${res.status}`);
-    throw new Error(`scoreWin failed: ${res.status}`);
-  }
-  return res.json();
-};
 
 type ScoreContext = {
   player: PlayerState;
@@ -673,8 +755,18 @@ const buildScoreContext = (meta: RoundMeta, player: PlayerState, winner: Seat, w
   meta
 });
 
+const SCORE_ERROR_LABELS: Record<string, string> = {
+  hand_not_winning: "和了形ではない",
+  no_yaku: "役なし",
+  winning_tile_not_in_hand: "和了牌が手牌にない",
+  open_hand_riichi_not_allowed: "副露リーチ不可",
+  open_hand_daburi_not_allowed: "副露ダブリー不可",
+  ippatsu_without_riichi_not_allowed: "一発条件不一致"
+};
+
 const formatScoreFailureDetail = (res: any) => {
-  if (res?.error) return `(${res.error})`;
+  const key = res?.error;
+  if (key) return `(${SCORE_ERROR_LABELS[key] ?? key})`;
   if (res?.result?.yaku) return "(役なし)";
   return "(判定失敗)";
 };
@@ -683,27 +775,44 @@ const SCORE_MELD_VARIANTS: Omit<MeldScoreOptions, "normalizeTile">[] = [
   { collapseKanKind: false, includeCalledTileInTiles: "keep", includeCalledField: true, sortTiles: true },
   { collapseKanKind: true, includeCalledTileInTiles: "keep", includeCalledField: true, sortTiles: true },
   { collapseKanKind: true, includeCalledTileInTiles: "force", includeCalledField: true, sortTiles: true },
-  { collapseKanKind: true, includeCalledTileInTiles: "remove", includeCalledField: true, sortTiles: true },
   { collapseKanKind: true, includeCalledTileInTiles: "keep", includeCalledField: false, sortTiles: true }
 ];
 
-const buildScorePayload = (context: ScoreContext, variant: Omit<MeldScoreOptions, "normalizeTile">, tileMode: "canonical" | "norm"): WinPayload => {
+const buildScorePayload = (
+  context: ScoreContext,
+  variant: Omit<MeldScoreOptions, "normalizeTile">,
+  tileMode: "canonical" | "norm",
+  extraFlags?: WinOptionFlags
+): WinPayload => {
   const normalize = tileMode === "norm" ? tileNorm : canonicalTile;
   const baseHand = normalizeHandForScore(context.player.hand, normalize);
   const winTile = normalize(context.winTile);
-  const trimmedHand = trimHandForScore(baseHand, context.player.melds, winTile);
+  const trimmedHand = baseHand;
   const melds = normalizeMeldsForScore(context.player.melds, {
     ...variant,
     normalizeTile: normalize
   });
+  const isRiichi = context.player.riichi || Boolean(extraFlags?.is_daburu_riichi || extraFlags?.is_open_riichi);
+  const isIppatsu = extraFlags?.is_ippatsu ?? false;
   return {
     hand: trimmedHand,
     melds,
     winTile,
     winType: context.winType,
     isClosed: context.player.closed,
-    riichi: context.player.riichi,
-    ippatsu: context.player.ippatsu,
+    riichi: isRiichi,
+    ippatsu: isIppatsu,
+    is_rinshan: extraFlags?.is_rinshan,
+    is_chankan: extraFlags?.is_chankan,
+    is_haitei: extraFlags?.is_haitei,
+    is_houtei: extraFlags?.is_houtei,
+    is_daburu_riichi: extraFlags?.is_daburu_riichi,
+    is_nagashi_mangan: extraFlags?.is_nagashi_mangan,
+    is_tenhou: extraFlags?.is_tenhou,
+    is_renhou: extraFlags?.is_renhou,
+    is_chiihou: extraFlags?.is_chiihou,
+    is_open_riichi: extraFlags?.is_open_riichi,
+    paarenchan: extraFlags?.paarenchan ? 1 : 0,
     roundWind: context.meta.wind,
     seatWind: context.winner,
     doraIndicators: getDoraIndicators(context.meta).filter(Boolean).map((tile) => normalize(tile)),
@@ -711,15 +820,16 @@ const buildScorePayload = (context: ScoreContext, variant: Omit<MeldScoreOptions
     honba: context.meta.honba,
     riichiSticks: context.meta.riichiSticks,
     dealer: context.winner === context.meta.dealer,
-    ...(context.winType === "tsumo" ? { menzenTsumo: context.player.closed } : {})
+    ...(context.winType === "tsumo" ? { menzenTsumo: context.player.closed } : {}),
+    ...(SCORE_DEBUG ? { debug: true } : {})
   };
 };
 
-const scoreWinWithVariants = async (context: ScoreContext) => {
+const scoreWinWithVariants = async (context: ScoreContext, extraFlags?: WinOptionFlags) => {
   const tried = new Set<string>();
   let firstResult: any = null;
   const attempt = async (variant: Omit<MeldScoreOptions, "normalizeTile">, tileMode: "canonical" | "norm") => {
-    const payload = buildScorePayload(context, variant, tileMode);
+    const payload = buildScorePayload(context, variant, tileMode, extraFlags);
     const key = JSON.stringify(payload);
     if (tried.has(key)) return null;
     tried.add(key);
@@ -766,7 +876,7 @@ const LeftTools = ({
 }: LeftToolsProps) => (
   <div className="left-tools">
     {showRemaining && (
-      <div className="panel remaining-panel">
+      <div className="panel">
         <div className="panel-title">山 : {wallRemaining}</div>
         <div className="remaining-grid">
           {remainingTiles.map(({ tile, count }) => {
@@ -797,43 +907,40 @@ const LeftTools = ({
 type RightPanelProps = {
   showButtons: boolean;
   initialLocked: boolean;
-  showSaved: boolean;
-  onLogStart: () => void;
   onRandomHands: () => void;
   onLogClear: () => void;
   onClearHands: () => void;
+  onLogExport: () => void;
+  onUndo: () => void;
+  undoDisabled: boolean;
   onPickDora: (index: number) => void;
-  onPickUra: (index: number) => void;
-  doraIndicators: TileStr[];
-  uraDoraIndicators: TileStr[];
+  doraDisplayTiles: TileStr[];
   doraRevealedCount: number;
   getTileSrc: (tile: string) => string | null;
   settingsDraft: SettingsDraft | null;
   onUpdateSettingsDraft: (updates: Partial<SettingsDraft>) => void;
-  viewState: GameState;
   tenpaiChecking: boolean;
   tenpaiError: string | null;
   rulesErrors: string[];
   actionLog: string[];
 };
 
+
 const RightPanel = ({
   showButtons,
   initialLocked,
-  showSaved,
-  onLogStart,
   onRandomHands,
   onLogClear,
   onClearHands,
+  onLogExport,
+  onUndo,
+  undoDisabled,
   onPickDora,
-  onPickUra,
-  doraIndicators,
-  uraDoraIndicators,
+  doraDisplayTiles,
   doraRevealedCount,
   getTileSrc,
   settingsDraft,
   onUpdateSettingsDraft,
-  viewState,
   tenpaiChecking,
   tenpaiError,
   rulesErrors,
@@ -843,9 +950,6 @@ const RightPanel = ({
     <div className="panel">
       {showButtons && (
         <div className="button-grid">
-          <button className="action-button" onClick={onLogStart}>
-            ログ開始
-          </button>
           <button className="action-button" onClick={onRandomHands} disabled={initialLocked}>
             ランダム配牌
           </button>
@@ -856,141 +960,81 @@ const RightPanel = ({
           <button className="action-button" onClick={onClearHands} disabled={initialLocked}>
             配牌クリア
           </button>
+          <button className="action-button" onClick={onLogExport}>
+            ログ出力
+          </button>
+          <button className="action-button" onClick={onUndo} disabled={undoDisabled}>
+            元に戻す
+          </button>
         </div>
         )}
       <div className="info compact">
         <div className="info-section">
           {settingsDraft && (
-            <div style={{ marginTop: 0 }}>
-              <div className="settings-grid" style={{ gap: 4 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                  場風
+            <div className="settings-wrap">
+              <div className="settings-grid settings-grid-compact">
+                <label className="settings-field">
+                  局
                   <select
-                    value={settingsDraft.wind}
-                    onChange={(e) => onUpdateSettingsDraft({ wind: e.target.value as Seat })}
-                    style={{ width: 48 }}
+                    value={roundIndexFromMeta(settingsDraft.wind, settingsDraft.kyoku)}
+                    onChange={(e) => {
+                      const next = roundMetaFromIndex(Number(e.target.value));
+                      onUpdateSettingsDraft({ wind: next.wind, kyoku: next.kyoku });
+                    }}
+                    className="settings-select"
                   >
-                    {SEAT_LIST.map((seat) => (
-                      <option key={`wind-${seat}`} value={seat}>
-                        {WIND_LABELS[seat]}
+                    {ROUND_OPTIONS.map((option) => (
+                      <option key={`round-${option.value}`} value={option.value}>
+                        {option.label}
                       </option>
                     ))}
                   </select>
                 </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                  局数
-                  <input
-                    type="number"
-                    value={settingsDraft.kyoku}
-                    onChange={(e) => onUpdateSettingsDraft({ kyoku: Number(e.target.value) })}
-                    style={{ width: 48 }}
-                  />
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                  親
-                  <select
-                    value={settingsDraft.dealer}
-                    onChange={(e) => onUpdateSettingsDraft({ dealer: e.target.value as Seat })}
-                    style={{ width: 48 }}
-                  >
-                    {SEAT_LIST.map((seat) => (
-                      <option key={`dealer-${seat}`} value={seat}>
-                        {WIND_LABELS[seat]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <label className="settings-field">
                   本場
                   <input
                     type="number"
                     value={settingsDraft.honba}
                     onChange={(e) => onUpdateSettingsDraft({ honba: Number(e.target.value) })}
-                    style={{ width: 48 }}
+                    className="settings-input"
                   />
                 </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <label className="settings-field">
                   供託
                   <input
                     type="number"
                     value={settingsDraft.riichiSticks}
                     onChange={(e) => onUpdateSettingsDraft({ riichiSticks: Number(e.target.value) })}
-                    style={{ width: 48 }}
+                    className="settings-input"
                   />
                 </label>
-                {showSaved && 
-                <label style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                  <div
-                    className="save-status"
-                    style={{ width: 48, marginTop: 15 }}
-                  >保存済み</div>
-                </label>
-                }
               </div>
             </div>
           )}
-          <div className="dora-tiles">
-            {Array.from({ length: 5 }, (_, idx) => {
-              const tile = doraIndicators[idx] ?? "";
-              const revealed = idx < doraRevealedCount && tile;
-              const src = revealed ? getTileSrc(tile) : null;
-              return (
-                <button
-                  key={`dora-${idx}`}
-                  type="button"
-                  onClick={() => onPickDora(idx)}
-                  className="picker-tile"
-                  style={
-                    src
-                      ? { backgroundImage: `url(${src})`, width: 28, height: 36 }
-                      : {
-                          width: 28,
-                          height: 36,
-                          backgroundColor: "#7b2a2f",
-                          border: "1px solid #f0c9c9"
-                        }
-                  }
-                >
-                  {!src && ""}
-                </button>
-              );
-            })}
+          <div className="dora-display">
+            <div className="dora-tiles">
+              {Array.from({ length: 5 }, (_, idx) => {
+                const tile = doraDisplayTiles[idx] ?? "";
+                const revealed = idx < doraRevealedCount && tile;
+                const src = revealed ? getTileSrc(tile) : null;
+                return (
+                  <button
+                    key={`dora-${idx}`}
+                    type="button"
+                    onClick={() => onPickDora(idx)}
+                    className={`picker-tile dora-tile ${src ? "" : "dora-tile-back"}`}
+                    style={src ? { backgroundImage: `url(${src})` } : undefined}
+                  >
+                    {!src && ""}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          {SEAT_LIST.some((seat) => viewState.players[seat].riichi) && (
-            <>
-              <div className="dora-tiles dora-tiles-ura">
-                {Array.from({ length: 5 }, (_, idx) => {
-                  const tile = uraDoraIndicators[idx] ?? "";
-                  const revealed = idx < doraRevealedCount && tile;
-                  const src = revealed ? getTileSrc(tile) : null;
-                  return (
-                    <button
-                      key={`ura-${idx}`}
-                      type="button"
-                      onClick={() => onPickUra(idx)}
-                      className="picker-tile"
-                      style={
-                        src
-                          ? { backgroundImage: `url(${src})`, width: 28, height: 36 }
-                          : {
-                              width: 28,
-                              height: 36,
-                              backgroundColor: "#7b2a2f",
-                              border: "1px solid #f0c9c9"
-                            }
-                      }
-                    >
-                      {!src && ""}
-                    </button>
-                  );
-                })}
-              </div>
-            </>
-          )}
         </div>
         {tenpaiChecking && <div>判定中...</div>}
-        {tenpaiError && <div className="warn">{tenpaiError}</div>}
-        {rulesErrors.length > 0 && <div className="warn">牌枚数の不整合があります</div>}
+        {tenpaiError && <div>{tenpaiError}</div>}
+        {rulesErrors.length > 0 && <div>牌枚数の不整合があります</div>}
         <div className="action-log">
         {actionLog.length === 0 && <div>ログなし</div>}
         {actionLog.map((line, idx) => (
@@ -1004,7 +1048,8 @@ const RightPanel = ({
 
 type PickerModalProps = {
   open: boolean;
-  kind: "hand" | "dora" | "ura" | "rinshan";
+  kind: "hand" | "dora" | "ura" | "rinshan" | "draw";
+  anchorPosition?: "above" | "below" | null;
   isTileAvailable: (tile: string) => boolean;
   remainingCount: (tile: string) => number;
   tileToAsset: (tile: string) => string | null;
@@ -1015,6 +1060,7 @@ type PickerModalProps = {
 const PickerModal = ({
   open,
   kind,
+  anchorPosition,
   isTileAvailable,
   remainingCount,
   tileToAsset,
@@ -1023,11 +1069,17 @@ const PickerModal = ({
 }: PickerModalProps) => {
   if (!open) return null;
   const tiles = kind === "dora" || kind === "ura" ? [...TILE_CHOICES, "BACK"] : TILE_CHOICES;
+  const anchorClass =
+    anchorPosition === "above"
+      ? "picker-backdrop picker-backdrop--above"
+      : anchorPosition === "below"
+        ? "picker-backdrop picker-backdrop--below"
+        : "picker-backdrop";
 
   return (
-    <div className="picker-backdrop" onClick={onClose} role="presentation">
+    <div className={anchorClass} onClick={onClose} role="presentation">
       <div className="picker-modal" onClick={(e) => e.stopPropagation()} role="presentation">
-        <div className="picker-title">牌を選択</div>
+        <div className="picker-title">牌選択</div>
         <div className="picker-grid">
           {tiles.map((tile) => {
             const src = tile === "BACK" ? null : tileToAsset(tile);
@@ -1060,18 +1112,152 @@ const PickerModal = ({
   );
 };
 
+type WinOptionKey = keyof Omit<WinOptionFlags, "doraCount" | "uraCount" | "akaCount">;
+
+const WIN_OPTION_FIELDS: { key: WinOptionKey; label: string }[] = [
+  { key: "is_ippatsu", label: "一発" },
+  { key: "is_rinshan", label: "嶺上開花" },
+  { key: "is_chankan", label: "槍槓" },
+  { key: "is_haitei", label: "ハイテイ" },
+  { key: "is_houtei", label: "ホウテイ" },
+  { key: "is_daburu_riichi", label: "ダブル立直" },
+  { key: "is_nagashi_mangan", label: "流し満貫" },
+  { key: "is_tenhou", label: "天和" },
+  { key: "is_renhou", label: "人和" },
+  { key: "is_chiihou", label: "地和" },
+  { key: "is_open_riichi", label: "オープン立直" },
+  { key: "paarenchan", label: "八連荘" }
+];
+
+type WinOptionsModalProps = {
+  open: boolean;
+  winType: "ron" | "tsumo" | null;
+  options: WinOptionFlags;
+  doraIndicators: TileStr[];
+  showUraIndicators: boolean;
+  uraDoraIndicators: TileStr[];
+  doraRevealedCount: number;
+  getTileSrc: (tile: string) => string | null;
+  onPickDora: (index: number) => void;
+  onPickUra: (index: number) => void;
+  onChange: (next: WinOptionFlags) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
+const WinOptionsModal = ({
+  open,
+  winType,
+  options,
+  doraIndicators,
+  showUraIndicators,
+  uraDoraIndicators,
+  doraRevealedCount,
+  getTileSrc,
+  onPickDora,
+  onPickUra,
+  onChange,
+  onConfirm,
+  onCancel
+}: WinOptionsModalProps) => {
+  if (!open) return null;
+  return (
+    <div className="win-options-backdrop" onClick={onCancel} role="presentation">
+      <div className="win-options-modal" onClick={(e) => e.stopPropagation()} role="presentation">
+        <div className="win-options-title">
+          {winType === "ron" ? "ロン" : winType === "tsumo" ? "ツモ" : "和了"}: 追加役
+        </div>
+        <div className="win-options-grid">
+          {WIN_OPTION_FIELDS.map((field) => (
+            <label key={field.key} className="win-option">
+              <input
+                type="checkbox"
+                checked={options[field.key]}
+                onChange={(e) => onChange({ ...options, [field.key]: e.target.checked })}
+              />
+              <span>{field.label}</span>
+            </label>
+          ))}
+        </div>
+        <div className="win-options-ura">
+          <div className="win-options-title">ドラ</div>
+          <div className="dora-tiles">
+            {Array.from({ length: 5 }, (_, idx) => {
+              const indicator = doraIndicators[idx] ?? "";
+              const revealed = idx < doraRevealedCount && indicator;
+              const src = revealed ? getTileSrc(indicator) : null;
+              return (
+                <button
+                  key={`win-dora-${idx}`}
+                  type="button"
+                  onClick={() => onPickDora(idx)}
+                  className={`picker-tile dora-tile ${src ? "" : "dora-tile-back"}`}
+                  style={src ? { backgroundImage: `url(${src})` } : undefined}
+                >
+                  {!src && ""}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {showUraIndicators && (
+          <div className="win-options-ura">
+            <div className="win-options-title">裏ドラ</div>
+            <div className="dora-tiles dora-tiles-ura">
+              {Array.from({ length: 5 }, (_, idx) => {
+                const indicator = uraDoraIndicators[idx] ?? "";
+                const revealed = idx < doraRevealedCount && indicator;
+                const src = revealed ? getTileSrc(indicator) : null;
+                return (
+                  <button
+                    key={`win-ura-${idx}`}
+                    type="button"
+                    onClick={() => onPickUra(idx)}
+                    className={`picker-tile dora-tile ${src ? "" : "dora-tile-back"}`}
+                    style={src ? { backgroundImage: `url(${src})` } : undefined}
+                  >
+                    {!src && ""}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        <div className="win-options-actions">
+          <button className="picker-close" type="button" onClick={onCancel}>
+            キャンセル
+          </button>
+          <button className="picker-clear" type="button" onClick={onConfirm}>
+            決定
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 type SettingsDraft = {
   wind: Seat;
   kyoku: number;
   honba: number;
   riichiSticks: number;
-  dealer: Seat;
-  points: Record<Seat, number>;
   doraIndicators: string;
   uraDoraIndicators: string;
 };
 
-type WinInfo = { seat: Seat; tile: string; type: "ron" | "tsumo" };
+type WinInfo = {
+  seat: Seat;
+  tile: string;
+  type: "ron" | "tsumo";
+  result?: any;
+  from?: Seat;
+  doraCounts?: DoraCounts;
+};
+
+type UndoSnapshot = {
+  ui: GameUiState;
+  pendingRinshan: Seat | null;
+};
 
 type GameUiState = {
   gameState: GameState | null;
@@ -1155,8 +1341,6 @@ const buildSettingsDraft = (meta: RoundMeta): SettingsDraft => ({
   kyoku: meta.kyoku,
   honba: meta.honba,
   riichiSticks: meta.riichiSticks,
-  dealer: meta.dealer,
-  points: { ...meta.points },
   doraIndicators: (meta.doraIndicators ?? []).filter(Boolean).join(","),
   uraDoraIndicators: (meta.uraDoraIndicators ?? []).filter(Boolean).join(",")
 });
@@ -1244,16 +1428,6 @@ const WallOps = {
 
 const getWallRemaining = (meta: RoundMeta) => (meta.liveWall ? meta.liveWall.length : 0);
 
-const getDoraIndicators = (meta: RoundMeta) => {
-  const count = Math.max(1, Math.min(5, meta.doraRevealedCount ?? 1));
-  return (meta.doraIndicators ?? []).slice(0, count);
-};
-
-const getUraDoraIndicators = (meta: RoundMeta) => {
-  const count = Math.max(1, Math.min(5, meta.doraRevealedCount ?? 1));
-  return (meta.uraDoraIndicators ?? []).slice(0, count);
-};
-
 const assertTileConservation = (state: GameState) => {
   const errors: string[] = [];
   if (!state.meta.liveWall || !state.meta.deadWall) return errors;
@@ -1274,7 +1448,10 @@ const assertTileConservation = (state: GameState) => {
   state.meta.liveWall.forEach(add);
   state.meta.deadWall.forEach(add);
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
-  if (total !== TOTAL_TILES) {
+  const doraCount = (state.meta.doraIndicators ?? [])
+    .map((tile) => TileOps.tileKeyForCount(TileOps.canonicalTile(tile)))
+    .filter((key): key is string => Boolean(key)).length;
+  if (total !== TOTAL_TILES && total - doraCount !== TOTAL_TILES) {
     errors.push(`牌総数が${total}枚です（期待: ${TOTAL_TILES}枚）`);
   }
   Object.keys(counts).forEach((key) => {
@@ -1292,6 +1469,11 @@ const checkTileConservation = (state: GameState, label: string) => {
     console.warn(`[tile-conservation:${label}]`, errors);
   }
   return errors;
+};
+
+const expectedHandCountBeforeDraw = (player: PlayerState) => {
+  // このアプリでは副露1組につき手牌の実枚数が3枚ずつ減る表現で保持している。
+  return Math.max(13 - player.melds.length * 3, 0);
 };
 
 const pickRandomAvailableTile = (state: GameState) => {
@@ -1423,32 +1605,6 @@ const normalizeMeldsForScore = (melds: Meld[], options: MeldScoreOptions): Meld[
 const normalizeHandForScore = (hand: TileStr[], normalize: (tile: string) => string) =>
   stripTiles(hand).map((tile) => normalize(tile));
 
-const isKanKind = (kind: Meld["kind"]) =>
-  kind === "KAN" || kind === "ANKAN" || kind === "MINKAN" || kind === "KAKAN";
-
-const trimHandForScore = (hand: TileStr[], melds: Meld[], winTile: TileStr | null) => {
-  let tiles = [...hand];
-  const meldTileCount = melds.reduce((sum, meld) => sum + (meld.tiles?.length ?? 0), 0);
-  const extra = tiles.length + meldTileCount + (winTile ? 1 : 0) - 14;
-  if (extra <= 0) return tiles;
-  const kanTiles = melds.filter((meld) => isKanKind(meld.kind)).flatMap((meld) => meld.tiles ?? []);
-  for (let i = 0; i < extra; i += 1) {
-    let removed = false;
-    for (const t of kanTiles) {
-      const next = removeOneExactThenNorm(tiles, t);
-      if (next.length !== tiles.length) {
-        tiles = next;
-        removed = true;
-        break;
-      }
-    }
-    if (!removed && tiles.length) {
-      tiles = tiles.slice(0, -1);
-    }
-  }
-  return tiles;
-};
-
 const formatYakuList = (yaku: unknown) => {
   if (!Array.isArray(yaku)) return "";
   return yaku.filter((item) => typeof item === "string").join(", ");
@@ -1469,6 +1625,104 @@ const formatScoreLine = (result: any) => {
   return `${han}翻 ${fu}符 ${costText}${yakuLabel}`.trim();
 };
 
+const calculateCostFromHanFu = (
+  han: number,
+  fu: number,
+  winType: "ron" | "tsumo",
+  isDealer: boolean
+) => {
+  if (!Number.isFinite(han) || han <= 0) return null;
+  const safeFu = Number.isFinite(fu) ? fu : 0;
+  const limitTier = getLimitTier(han, safeFu);
+  const round100 = (value: number) => Math.ceil(value / 100) * 100;
+  const basePoints = (() => {
+    if (limitTier === "満貫") return 2000;
+    if (limitTier === "跳満") return 3000;
+    if (limitTier === "倍満") return 4000;
+    if (limitTier === "三倍満") return 6000;
+    if (limitTier === "役満") return 8000;
+    if (safeFu <= 0) return null;
+    return safeFu * Math.pow(2, han + 2);
+  })();
+  if (basePoints == null) return null;
+  if (winType === "ron") {
+    const pay = round100(basePoints * (isDealer ? 6 : 4));
+    return { main: pay };
+  }
+  if (isDealer) {
+    const pay = round100(basePoints * 2);
+    return { main: pay };
+  }
+  return {
+    main: round100(basePoints * 2),
+    additional: round100(basePoints)
+  };
+};
+
+
+const sanitizeDoraCounts = (options?: WinOptionFlags): DoraCounts | null => {
+  if (!options) return null;
+  const hasAny =
+    typeof options.doraCount === "number" ||
+    typeof options.uraCount === "number" ||
+    typeof options.akaCount === "number";
+  if (!hasAny) return null;
+  const normalize = (value: number) => (Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0);
+  return {
+    dora: normalize(options.doraCount ?? 0),
+    ura: normalize(options.uraCount ?? 0),
+    aka: normalize(options.akaCount ?? 0)
+  };
+};
+
+const extractDoraCountsFromYaku = (yaku: unknown): DoraCounts => {
+  if (!Array.isArray(yaku)) return { dora: 0, ura: 0, aka: 0 };
+  const counts = { dora: 0, ura: 0, aka: 0 };
+  yaku.forEach((item) => {
+    if (typeof item !== "string") return;
+    const normalized = item.replace(/[\s_-]+/g, "").toLowerCase();
+    if (normalized.includes("akadora")) {
+      counts.aka += 1;
+      return;
+    }
+    if (normalized.includes("uradora")) {
+      counts.ura += 1;
+      return;
+    }
+    if (normalized.includes("dora")) {
+      counts.dora += 1;
+    }
+  });
+  return counts;
+};
+
+const applyDoraOverridesToResult = (
+  result: any,
+  context: ScoreContext,
+  options?: WinOptionFlags
+) => {
+  if (!result) return result;
+  const hasRiichi =
+    context.player.riichi || Boolean(options?.is_daburu_riichi || options?.is_open_riichi);
+  const target =
+    sanitizeDoraCounts(options) ??
+    computeDoraCountsForWin(context.meta, context.player, context.winTile, hasRiichi);
+  const resultCounts = extractDoraCountsFromYaku(result.yaku);
+  const resultTotal = resultCounts.dora + resultCounts.ura + resultCounts.aka;
+  const targetTotal = target.dora + target.ura + target.aka;
+  const nextHan = Math.max(0, (result.han ?? 0) - resultTotal + targetTotal);
+  const nextCost =
+    nextHan > 0
+      ? calculateCostFromHanFu(nextHan, result.fu ?? 0, context.winType, context.winner === context.meta.dealer)
+      : result.cost;
+  return {
+    ...result,
+    han: nextHan,
+    cost: nextCost ?? result.cost,
+    yaku: rebuildDoraYakuList(result.yaku, target)
+  };
+};
+
 const LOG_TILE_LABELS: Record<string, string> = {
   E: "ton",
   S: "nan",
@@ -1487,6 +1741,53 @@ const formatTileForLog = (tile: string) => {
 };
 
 const formatSeatForLog = (seat: Seat) => WIND_LABELS[seat] ?? seat;
+
+const SEAT_LABEL_TO_SEAT: Record<string, Seat> = {
+  東: "E",
+  南: "S",
+  西: "W",
+  北: "N"
+};
+
+const formatLogCode = (code: number) => String(code).padStart(2, "0");
+
+const buildCallLogToken = (
+  kind: "CHI" | "PON" | "MINKAN" | "ANKAN" | "KAKAN",
+  meld: Meld
+) => {
+  const orderedTiles = [...(meld.tiles ?? [])];
+  const codes = orderedTiles
+    .map(tileToLogCode)
+    .filter((code): code is number => typeof code === "number");
+  if (!codes.length) return null;
+  if (kind === "CHI") {
+    return `c${codes.map(formatLogCode).join("")}`;
+  }
+  const marker = kind === "PON" ? "p" : kind === "MINKAN" ? "m" : kind === "ANKAN" ? "a" : "k";
+  let calledIndex = -1;
+  if (meld.by && meld.calledFrom) {
+    const idx = calledIndexFor(meld.by, meld.calledFrom, orderedTiles.length);
+    if (typeof idx === "number") calledIndex = idx;
+  }
+  if (calledIndex < 0 && meld.calledTile) {
+    const idx = orderedTiles.findIndex((tile) => tileEq(tile, meld.calledTile!));
+    if (idx >= 0) calledIndex = idx;
+  }
+  if (kind === "ANKAN" || kind === "KAKAN") {
+    const target = meld.calledTile ?? orderedTiles[orderedTiles.length - 1];
+    const lastIdx = target
+      ? [...orderedTiles]
+          .map((tile, idx) => ({ tile, idx }))
+          .reverse()
+          .find((item) => tileEq(item.tile, target))?.idx ?? -1
+      : -1;
+    if (lastIdx >= 0) calledIndex = lastIdx;
+  }
+  if (calledIndex < 0) calledIndex = 0;
+  return codes
+    .map((code, idx) => (idx === calledIndex ? `${marker}${formatLogCode(code)}` : formatLogCode(code)))
+    .join("");
+};
 
 const tileLabel = (tile: string) => TileOps.canonicalTile(tile);
 
@@ -1645,9 +1946,29 @@ export const App = () => {
   });
   const [riichiOptions, setRiichiOptions] = useState<TileStr[]>([]);
   const setPendingRiichi = setGameUiField("pendingRiichi");
+  const pushUndo = () => {
+    if (!gameState) return;
+    const next = [...undoStackRef.current, { ui: cloneState(gameUi), pendingRinshan }];
+    if (next.length > 30) next.shift();
+    undoStackRef.current = next;
+    setUndoCount(next.length);
+  };
+  const undoLast = () => {
+    const stack = undoStackRef.current;
+    if (!stack.length) return;
+    const snapshot = stack[stack.length - 1];
+    undoStackRef.current = stack.slice(0, -1);
+    setUndoCount(undoStackRef.current.length);
+    undoGuardRef.current = true;
+    dispatchGameUi({ type: "RESET", state: snapshot.ui });
+    setPendingRinshan(snapshot.pendingRinshan);
+    setWinOptionsOpen(false);
+    setPendingWin(null);
+    setTimeout(() => {
+      undoGuardRef.current = false;
+    }, 0);
+  };
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft | null>(null);
-  const [showSaved, setShowSaved] = useState(false);
-  const savedTimerRef = useRef<number | null>(null);
   const settingsInitRef = useRef(false);
   const [seatNames, setSeatNames] = useState<Record<Seat, string>>({
     E: "プレイヤー1",
@@ -1671,17 +1992,58 @@ export const App = () => {
     setActionLog((prev) => [...prev, ...list]);
     setActionIndex((prev) => prev + 1);
   };
+  const appendScoreDebug = (res: any) => {
+    const debug = res?.debug;
+    if (!Array.isArray(debug) || debug.length === 0) return;
+    appendActionLog(debug);
+  };
   const tenpaiCacheRef = useRef(new Map<string, { waits: TileStr[]; shanten?: number; ok?: boolean; error?: string }>());
 
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerKind, setPickerKind] = useState<"hand" | "dora" | "ura" | "rinshan">("hand");
+  const [pickerKind, setPickerKind] = useState<"hand" | "dora" | "ura" | "rinshan" | "draw">("hand");
   const [pickerSeat, setPickerSeat] = useState<Seat>("E");
   const [pickerIndex, setPickerIndex] = useState<number | null>(null);
   const [callPickerOpen, setCallPickerOpen] = useState(false);
   const [callPickerOptions, setCallPickerOptions] = useState<CallMeldOption[]>([]);
+  const [pickerBatch, setPickerBatch] = useState<{ active: boolean; firstIndex: number | null }>({
+    active: false,
+    firstIndex: null
+  });
+  const imageImportRef = useRef<HTMLInputElement | null>(null);
+  const [imageImportSeat, setImageImportSeat] = useState<Seat | null>(null);
+  const imageImportSeatRef = useRef<Seat | null>(null);
+  const [imageImportBusy, setImageImportBusy] = useState(false);
+  const defaultWinOptions: WinOptionFlags = {
+    is_ippatsu: false,
+    is_rinshan: false,
+    is_chankan: false,
+    is_haitei: false,
+    is_houtei: false,
+    is_daburu_riichi: false,
+    is_nagashi_mangan: false,
+    is_tenhou: false,
+    is_renhou: false,
+    is_chiihou: false,
+    is_open_riichi: false,
+    paarenchan: false,
+    doraCount: 0,
+    uraCount: 0,
+    akaCount: 0
+  };
+  const [winOptionsOpen, setWinOptionsOpen] = useState(false);
+  const [winOptions, setWinOptions] = useState<WinOptionFlags>(defaultWinOptions);
+  const [pendingWin, setPendingWin] = useState<
+    | { type: "ron"; claim: Extract<LegalAction, { type: "RON_WIN" }> }
+    | { type: "tsumo"; seat: Seat }
+    | null
+  >(null);
   const discardGuardRef = useRef<{ sig: string; at: number } | null>(null);
   const [pendingRinshan, setPendingRinshan] = useState<Seat | null>(null);
+  const undoStackRef = useRef<UndoSnapshot[]>([]);
+  const [undoCount, setUndoCount] = useState(0);
+  const undoGuardRef = useRef(false);
   const initialRandomizedRef = useRef(false);
+  const logInitRef = useRef<GameState | null>(null);
   const runImmediate = <T extends unknown[]>(fn: (...args: T) => void) =>
     (...args: T) => {
       flushSync(() => {
@@ -1720,6 +2082,16 @@ export const App = () => {
     return initFromKifuStep(round, step, initOverrides);
   }, [gameState, overrideBySeat, overrideDora, overrideUra, round, step, metaOverrides]);
 
+  const seatOrder = useMemo(() => {
+    const dealer = getDealerFromKyoku(viewState.meta.kyoku ?? 1);
+    return [
+      dealer,
+      nextSeat(dealer),
+      nextSeat(nextSeat(dealer)),
+      nextSeat(nextSeat(nextSeat(dealer)))
+    ] as Seat[];
+  }, [viewState.meta.kyoku]);
+
   const updateSeatName = (seat: Seat, name: string) => {
     setSeatNames((prev) => ({ ...prev, [seat]: name }));
   };
@@ -1744,9 +2116,6 @@ export const App = () => {
         points: { ...(prev?.points ?? viewState.meta.points), [seat]: nextValue }
       }));
     }
-    setSettingsDraft((prev) =>
-      prev ? { ...prev, points: { ...prev.points, [seat]: nextValue } } : prev
-    );
   };
 
   const handSignature = useMemo(() => {
@@ -1757,7 +2126,7 @@ export const App = () => {
   }, [gameState]);
 
   const rulesErrors = useMemo(
-    () => (viewState ? validateState(viewState, pendingRinshan) : []),
+    () => (viewState ? validateState(viewState) : []),
     [viewState, pendingRinshan]
   );
   const callOptionsAll = useMemo(() => {
@@ -2013,7 +2382,7 @@ export const App = () => {
   const isTileAvailable = (tile: string) => {
     const key = tileKeyForCount(tile);
     if (!key) return true;
-    if (pickerKind === "rinshan") {
+    if (pickerKind === "rinshan" || pickerKind === "draw") {
       if (gameState && wallRemainingByKey) return (wallRemainingByKey[key] ?? 0) > 0;
       const limit = TILE_LIMITS[key] ?? 0;
       const used = usedCounts[key] ?? 0;
@@ -2035,7 +2404,7 @@ export const App = () => {
   const remainingCountForPicker = (tile: string) => {
     const key = tileKeyForCount(tile);
     if (!key) return 0;
-    if (pickerKind === "rinshan") {
+    if (pickerKind === "rinshan" || pickerKind === "draw") {
       if (gameState && wallRemainingByKey) return wallRemainingByKey[key] ?? 0;
       return remainingCountFromUsed(tile);
     }
@@ -2048,12 +2417,6 @@ export const App = () => {
     if (!key) return 0;
     if (!gameState || !displayRemainingByKey) return remainingCountFromUsed(tile);
     return displayRemainingByKey[key] ?? 0;
-  };
-
-  const wallCountForTile = (tile: string) => {
-    const key = tileKeyForCount(tile);
-    if (!key) return 0;
-    return wallRemainingByKey?.[key] ?? 0;
   };
 
   const remainingTotalFromUsed = useMemo(() => {
@@ -2094,7 +2457,7 @@ export const App = () => {
       N: randomTiles(13)
     };
     const doraIndicators = deck.splice(0, 1);
-    const uraIndicators = deck.length ? [deck[Math.floor(Math.random() * deck.length)]] : [];
+    const uraIndicators: string[] = [];
     const liveWall = deck.splice(0);
     const nextKey = `${roundIndex}-0`;
     setStepIndex(0);
@@ -2109,13 +2472,6 @@ export const App = () => {
       doraRevealedCount: 1
     }));
   };
-
-  useEffect(() => {
-    if (initialRandomizedRef.current) return;
-    if (gameState) return;
-    initialRandomizedRef.current = true;
-    handleRandomHands();
-  }, [gameState, handleRandomHands]);
 
   const handleClearHands = () => {
     if (gameState) {
@@ -2166,6 +2522,13 @@ export const App = () => {
     setPendingRinshan(null);
   };
 
+  useEffect(() => {
+    if (initialRandomizedRef.current) return;
+    if (gameState) return;
+    initialRandomizedRef.current = true;
+    handleClearHands();
+  }, [gameState, handleClearHands]);
+
   const buildInitOverrides = () => {
     const metaPoints = (metaOverrides?.points as Record<Seat, number> | undefined) ?? undefined;
     const metaDora = overrideDora.length > 0 ? overrideDora : step?.doraIndicators ?? [];
@@ -2182,7 +2545,354 @@ export const App = () => {
     };
   };
 
-  const handleLogStart = () => {
+  const buildLogExport = () => {
+    const baseState = gameState ?? viewState;
+    const initState = logInitRef.current ?? baseState;
+    const meta = baseState.meta;
+    const initMeta = initState.meta;
+    const roundWindLabel = WIND_LABELS[meta.wind] ?? "南";
+    const dispWind = roundWindLabel;
+    const rule = {
+      disp: `般${dispWind}喰赤`,
+      aka: 1
+    };
+    const kyokuIndex =
+      (meta.wind === "E" ? 0 : meta.wind === "S" ? 4 : meta.wind === "W" ? 8 : 12) +
+      Math.max(0, (meta.kyoku ?? 1) - 1);
+    const scores = SEAT_LIST.map((seat) => initMeta.points?.[seat] ?? meta.points[seat] ?? 0);
+    const doraCodes = getDoraIndicators(meta)
+      .map(tileToLogCode)
+      .filter((code): code is number => typeof code === "number");
+    const winnerSeat = winInfo?.seat ?? null;
+    const winnerRiichi =
+      winnerSeat != null &&
+      (baseState.players[winnerSeat]?.riichi ||
+        (Array.isArray(winInfo?.result?.yaku) &&
+          winInfo.result.yaku.some((name: string) => /riichi/i.test(String(name)))));
+    const uraCodes = winnerRiichi
+      ? getUraDoraIndicators(meta)
+          .map(tileToLogCode)
+          .filter((code): code is number => typeof code === "number")
+      : [];
+
+    type LogValue = number | string;
+    const seatState: Record<
+      Seat,
+      {
+        draws: LogValue[];
+        discards: LogValue[];
+        lastDraw: TileStr | null;
+        lastDiscardIndex: number | null;
+      }
+    > = {
+      E: { draws: [], discards: [], lastDraw: null, lastDiscardIndex: null },
+      S: { draws: [], discards: [], lastDraw: null, lastDiscardIndex: null },
+      W: { draws: [], discards: [], lastDraw: null, lastDiscardIndex: null },
+      N: { draws: [], discards: [], lastDraw: null, lastDiscardIndex: null }
+    };
+
+    type MeldTracker = {
+      meld: Meld;
+      usedChi: boolean;
+      usedPon: boolean;
+      usedKan: boolean;
+    };
+    const meldTrackers: Record<Seat, MeldTracker[]> = {
+      E: (baseState.players.E.melds ?? []).map((meld) => ({
+        meld,
+        usedChi: false,
+        usedPon: false,
+        usedKan: false
+      })),
+      S: (baseState.players.S.melds ?? []).map((meld) => ({
+        meld,
+        usedChi: false,
+        usedPon: false,
+        usedKan: false
+      })),
+      W: (baseState.players.W.melds ?? []).map((meld) => ({
+        meld,
+        usedChi: false,
+        usedPon: false,
+        usedKan: false
+      })),
+      N: (baseState.players.N.melds ?? []).map((meld) => ({
+        meld,
+        usedChi: false,
+        usedPon: false,
+        usedKan: false
+      }))
+    };
+
+    const matchesCalledTile = (meld: Meld, tile: TileStr | null) => {
+      if (!tile) return true;
+      if (meld.calledTile) return tileEq(meld.calledTile, tile);
+      return (meld.tiles ?? []).some((t) => tileEq(t, tile));
+    };
+
+    const pickMeld = (
+      seat: Seat,
+      kinds: Meld["kind"][],
+      tile: TileStr | null,
+      stage: "chi" | "pon" | "kan"
+    ) => {
+      const trackers = meldTrackers[seat];
+      for (const tracker of trackers) {
+        if (!kinds.includes(tracker.meld.kind)) continue;
+        if (stage === "chi" && tracker.usedChi) continue;
+        if (stage === "pon" && tracker.usedPon) continue;
+        if (stage === "kan" && tracker.usedKan) continue;
+        if (!matchesCalledTile(tracker.meld, tile)) continue;
+        if (stage === "chi") tracker.usedChi = true;
+        if (stage === "pon") tracker.usedPon = true;
+        if (stage === "kan") tracker.usedKan = true;
+        return tracker.meld;
+      }
+      return null;
+    };
+
+    const pickMeldWithFallback = (
+      seat: Seat,
+      kinds: Meld["kind"][],
+      tile: TileStr | null,
+      stage: "chi" | "pon" | "kan"
+    ) => pickMeld(seat, kinds, tile, stage) ?? pickMeld(seat, kinds, null, stage);
+
+    const pushCallToken = (
+      seat: Seat,
+      kind: "CHI" | "PON" | "MINKAN" | "ANKAN" | "KAKAN",
+      tile: TileStr | null,
+      stage: "chi" | "pon" | "kan"
+    ) => {
+      const kinds: Meld["kind"][] =
+        kind === "CHI"
+          ? ["CHI"]
+          : kind === "PON"
+            ? ["PON", "KAKAN"]
+            : kind === "MINKAN"
+              ? ["MINKAN", "KAN"]
+              : kind === "ANKAN"
+                ? ["ANKAN"]
+                : ["KAKAN"];
+      const meld = pickMeld(seat, kinds, tile, stage);
+      if (!meld) return;
+      const token = buildCallLogToken(kind, meld);
+      if (token) seatState[seat].draws.push(token);
+      seatState[seat].lastDraw = null;
+    };
+
+    const pushDiscardValue = (seat: Seat, value: LogValue) => {
+      seatState[seat].lastDiscardIndex = seatState[seat].discards.length;
+      seatState[seat].discards.push(value);
+    };
+
+    const applySelfKanLog = (seat: Seat, kanTile: TileStr | null) => {
+      const lastDraw = seatState[seat].lastDraw;
+      const effectiveTile = kanTile ?? lastDraw;
+      const useFallback = kanTile == null;
+      const kakan = useFallback
+        ? pickMeldWithFallback(seat, ["KAKAN"], effectiveTile ?? null, "kan")
+        : pickMeld(seat, ["KAKAN"], effectiveTile ?? null, "kan");
+      const ankan = kakan
+        ? null
+        : useFallback
+          ? pickMeldWithFallback(seat, ["ANKAN"], effectiveTile ?? null, "kan")
+          : pickMeld(seat, ["ANKAN"], effectiveTile ?? null, "kan");
+      const meld = kakan ?? ankan;
+      if (!meld) return false;
+      const kind = meld.kind === "ANKAN" ? "ANKAN" : "KAKAN";
+      const kanTileResolved = kanTile ?? meld.calledTile ?? meld.tiles?.[0] ?? null;
+      if (lastDraw) {
+        const token = buildCallLogToken(kind, meld);
+        if (token) pushDiscardValue(seat, token);
+        seatState[seat].lastDraw = null;
+        return true;
+      }
+      const token = buildCallLogToken(kind, meld);
+      if (token) pushDiscardValue(seat, token);
+      seatState[seat].lastDraw = null;
+      return true;
+    };
+
+    let lastSeat: Seat | null = null;
+    actionLog.forEach((line) => {
+      const actionMatch = line.match(/^([東南西北])(ツモ|ステ|チー|ポン|カン):\s*(.+)$/);
+      if (actionMatch) {
+        const seat = SEAT_LABEL_TO_SEAT[actionMatch[1]];
+        const action = actionMatch[2];
+        const tileToken = actionMatch[3];
+        const tile = logTokenToTile(tileToken);
+        if (!seat) return;
+        lastSeat = seat;
+        if (action === "ツモ") {
+          if (!tile) return;
+          const code = tileToLogCode(tile);
+          if (code !== null) seatState[seat].draws.push(code);
+          seatState[seat].lastDraw = tile;
+          return;
+        }
+        if (action === "ステ") {
+          if (!tile) return;
+          const code = tileToLogCode(tile);
+          if (code === null) return;
+          const isTsumogiri = seatState[seat].lastDraw ? tileEq(seatState[seat].lastDraw, tile) : false;
+          const discardValue: LogValue = isTsumogiri ? 60 : code;
+          pushDiscardValue(seat, discardValue);
+          seatState[seat].lastDraw = null;
+          return;
+        }
+        if (action === "チー") {
+          pushCallToken(seat, "CHI", tile, "chi");
+          return;
+        }
+        if (action === "ポン") {
+          pushCallToken(seat, "PON", tile, "pon");
+          return;
+        }
+        if (action === "カン") {
+          if (!applySelfKanLog(seat, tile)) {
+            pushCallToken(seat, "MINKAN", tile, "kan");
+            pushDiscardValue(seat, 0);
+          }
+        }
+        return;
+      }
+      const riichiMatch = line.match(/^([東南西北])リーチ$/);
+      if (riichiMatch) {
+        const seat = SEAT_LABEL_TO_SEAT[riichiMatch[1]];
+        if (!seat) return;
+        lastSeat = seat;
+        const idx = seatState[seat].lastDiscardIndex;
+        if (idx !== null) {
+          const value = seatState[seat].discards[idx];
+          seatState[seat].discards[idx] = `r${value}`;
+        }
+        return;
+      }
+      if (line.trim() === "カン" && lastSeat) {
+        applySelfKanLog(lastSeat, null);
+      }
+    });
+
+    const initialHands = {
+      E: (initState.players.E.hand ?? [])
+        .map(tileToLogCode)
+        .filter((code): code is number => typeof code === "number"),
+      S: (initState.players.S.hand ?? [])
+        .map(tileToLogCode)
+        .filter((code): code is number => typeof code === "number"),
+      W: (initState.players.W.hand ?? [])
+        .map(tileToLogCode)
+        .filter((code): code is number => typeof code === "number"),
+      N: (initState.players.N.hand ?? [])
+        .map(tileToLogCode)
+        .filter((code): code is number => typeof code === "number")
+    };
+
+    const logEntry: any[] = [
+      [kyokuIndex, meta.honba ?? 0, meta.riichiSticks ?? 0],
+      scores,
+      doraCodes,
+      uraCodes,
+      initialHands.E,
+      seatState.E.draws,
+      seatState.E.discards,
+      initialHands.S,
+      seatState.S.draws,
+      seatState.S.discards,
+      initialHands.W,
+      seatState.W.draws,
+      seatState.W.discards,
+      initialHands.N,
+      seatState.N.draws,
+      seatState.N.discards
+    ];
+
+    if (winInfo && baseState.phase === "ENDED") {
+      const startPoints = initMeta.points ?? { E: 0, S: 0, W: 0, N: 0 };
+      const endPointsRaw = meta.points ?? { E: 0, S: 0, W: 0, N: 0 };
+      const loserSeat = winInfo.type === "ron" ? winInfo.from ?? baseState.lastDiscard?.seat ?? null : null;
+      const riichiInvalidSeat =
+        loserSeat != null &&
+        riichiDiscards[loserSeat] != null &&
+        baseState.players[loserSeat]?.discards?.length
+          ? riichiDiscards[loserSeat] === baseState.players[loserSeat].discards.length - 1
+            ? loserSeat
+            : null
+          : null;
+      const endPoints = { ...endPointsRaw };
+      SEAT_LIST.forEach((seat) => {
+        if (riichiDiscards[seat] == null) return;
+        if (riichiInvalidSeat === seat) return;
+        endPoints[seat] = (endPoints[seat] ?? 0) + 1000;
+      });
+      const delta = SEAT_LIST.map((seat) => (endPoints[seat] ?? 0) - (startPoints[seat] ?? 0));
+      const dealerSeat = getDealerFromKyoku(meta.kyoku ?? 1);
+      const order: Seat[] = [
+        dealerSeat,
+        nextSeat(dealerSeat),
+        nextSeat(nextSeat(dealerSeat)),
+        nextSeat(nextSeat(nextSeat(dealerSeat)))
+      ];
+      const winnerSeat = winInfo.seat;
+      const loserSeatFinal = winInfo.type === "ron" ? winInfo.from ?? baseState.lastDiscard?.seat ?? winnerSeat : winnerSeat;
+      const winnerIndex = order.indexOf(winnerSeat);
+      const loserIndex = order.indexOf(loserSeatFinal);
+      const paoIndex = winnerIndex;
+      const scoreSummary = formatScoreSummaryForLog(winInfo.result, winInfo.type, winnerSeat === dealerSeat);
+      const winnerPlayer = baseState.players[winnerSeat];
+      const hasRiichi =
+        winnerPlayer.riichi ||
+        (Array.isArray(winInfo.result?.yaku) &&
+          winInfo.result.yaku.some((name: string) => /riichi/i.test(String(name))));
+      const doraCounts =
+        winInfo.doraCounts ??
+        computeDoraCountsForWin(meta, winnerPlayer, winInfo.tile ?? "", hasRiichi);
+      const yakuEntries = buildJapaneseYakuList(
+        winInfo.result?.yaku ?? [],
+        winnerPlayer?.closed ?? true,
+        winnerSeat,
+        meta.wind,
+        doraCounts
+      );
+      const detail: any[] = [winnerIndex, loserIndex, paoIndex];
+      if (scoreSummary) detail.push(scoreSummary);
+      detail.push(...yakuEntries);
+      logEntry.push(["和了", delta, detail]);
+    } else if (!winInfo && baseState.phase === "ENDED") {
+      const startPoints = initMeta.points ?? { E: 0, S: 0, W: 0, N: 0 };
+      const endPoints = meta.points ?? { E: 0, S: 0, W: 0, N: 0 };
+      const delta = SEAT_LIST.map((seat) => (endPoints[seat] ?? 0) - (startPoints[seat] ?? 0));
+      const hasDelta = delta.some((value) => value !== 0);
+      const tenpaiList = SEAT_LIST.map((seat) => (tenpaiFlags[seat] ? 1 : 0));
+      const hasTenpai = tenpaiList.some((value) => value !== 0);
+      if (hasDelta || hasTenpai) {
+        logEntry.push(["流局", delta, tenpaiList]);
+      } else {
+        logEntry.push(["流局", delta]);
+      }
+    }
+
+    return {
+      title: ["", ""],
+      name: [seatNames.E, seatNames.S, seatNames.W, seatNames.N],
+      rule,
+      log: [logEntry]
+    };
+  };
+
+  const exportLog = () => {
+    const snapshot = buildLogExport();
+    const blob = new Blob([JSON.stringify(snapshot)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mj-log-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const startGameFromOverrides = () => {
     const initOverrides = buildInitOverrides();
     let nextState = initFromKifuStep(round, step, initOverrides);
     nextState = {
@@ -2191,16 +2901,22 @@ export const App = () => {
       lastDiscard: undefined,
       pendingClaims: []
     };
-    nextState = { ...nextState, phase: "BEFORE_DRAW" };
     resetGameUi({ gameState: nextState });
+    logInitRef.current = cloneState(nextState);
+    undoStackRef.current = [];
+    setUndoCount(0);
+    return nextState;
   };
 
   const handleLogClear = () => {
     resetGameUi();
+    logInitRef.current = null;
+    undoStackRef.current = [];
+    setUndoCount(0);
   };
 
-  const openPicker = (seat: Seat, index: number, tileOverride?: string | null) => {
-    if (gameState) {
+  const openPicker = (seat: Seat, index: number, tileOverride?: string | null, allowGameEdit = false) => {
+    if (gameState && !allowGameEdit) {
       if (gameState.phase === "AFTER_DRAW_MUST_DISCARD" && gameState.turn === seat) {
         const display = splitDisplayTiles(gameState, seat);
         const tile = tileOverride ?? display.tiles[index] ?? "";
@@ -2210,21 +2926,183 @@ export const App = () => {
       }
       return;
     }
+    const hand = allowGameEdit && gameState
+      ? gameState.players?.[seat]?.hand ?? []
+      : viewState.players?.[seat]?.hand ?? [];
+    const hasPlaceholders = hand.some((tile) => !tile || tile === TILE_PLACEHOLDER);
+    setPickerBatch(hasPlaceholders ? { active: true, firstIndex: index } : { active: false, firstIndex: null });
     setPickerSeat(seat);
     setPickerIndex(index);
     setPickerKind("hand");
     setPickerOpen(true);
   };
 
+  const normalizeDetectedTile = (value: string) => {
+    if (!value) return "";
+    let text = value.trim();
+    if (!text) return "";
+    if (text.includes(" ")) {
+      text = text.split(/\s+/).pop() ?? text;
+    }
+    if (text.includes("-") && text.length > 2) {
+      text = text.split("-").pop()?.trim() ?? text;
+    }
+    const honorMap: Record<string, TileStr> = {
+      to: "E",
+      na: "S",
+      sh: "W",
+      pe: "N",
+      hk: "P",
+      ht: "F",
+      ty: "C"
+    };
+    if (honorMap[text]) return honorMap[text];
+    return canonicalTile(text) ?? text;
+  };
+
+  const applyDetectedTilesToSeat = (seat: Seat, tiles: string[]) => {
+    const normalized = tiles
+      .map((tile) => normalizeDetectedTile(tile))
+      .map((tile) => canonicalTile(tile))
+      .filter((tile): tile is TileStr => Boolean(tile));
+    const baseHand = normalized.slice(0, 13);
+    const extraTile = normalized[13] ?? null;
+    const paddedHand = [...baseHand];
+    while (paddedHand.length < 13) paddedHand.push(TILE_PLACEHOLDER);
+
+    if (!gameState) {
+      const turnSeat = viewState.turn;
+      if (extraTile && seat !== turnSeat) {
+        appendActionLog("ツモ牌は手番のみ反映できます");
+      }
+      if (!(extraTile && seat === turnSeat)) {
+        setHandOverrides((prev) => {
+          const bySeat = { ...(prev[handKey] ?? {}) };
+          bySeat[seat] = sortTiles(paddedHand);
+          return { ...prev, [handKey]: bySeat };
+        });
+        setMetaOverrides((prev) => ({ ...(prev ?? {}), liveWall: [], deadWall: [] }));
+        return;
+      }
+    }
+
+    const ensureState = gameState ?? startGameFromOverrides();
+    if (!ensureState) return;
+    const player = ensureState.players[seat];
+    if (player.discards.length > 0) {
+      appendActionLog("捨て牌後は画像反映できません");
+      return;
+    }
+
+    const isTurnSeat = seat === ensureState.turn;
+    const canAssignDrawn = Boolean(extraTile && isTurnSeat);
+    if (extraTile && !canAssignDrawn) {
+      appendActionLog("ツモ牌は手番のみ反映できます");
+    }
+
+    const returnTiles = [
+      ...player.hand,
+      ...(player.drawnTile && player.drawnFrom !== "CALL" ? [player.drawnTile] : [])
+    ]
+      .map((tile) => canonicalTile(tile))
+      .filter((tile): tile is TileStr => Boolean(tile) && tile !== TILE_PLACEHOLDER && tile !== TILE_BACK);
+
+    const takeTiles = [
+      ...baseHand,
+      ...(canAssignDrawn ? [extraTile as TileStr] : [])
+    ]
+      .map((tile) => canonicalTile(tile))
+      .filter((tile): tile is TileStr => Boolean(tile) && tile !== TILE_PLACEHOLDER && tile !== TILE_BACK);
+
+    let nextLiveWall = [...(ensureState.meta.liveWall ?? [])];
+    if (returnTiles.length) nextLiveWall = [...nextLiveWall, ...returnTiles];
+    let failed = false;
+    let failedTile = "";
+    takeTiles.forEach((tile) => {
+      const removed = WallOps.removeWallTile(nextLiveWall, tile);
+      if (!removed.found) {
+        failed = true;
+        failedTile = tile;
+        return;
+      }
+      nextLiveWall = removed.next;
+    });
+    if (failed) {
+      appendActionLog(failedTile ? `山にありません: ${formatTileForLog(failedTile)}` : "山にありません");
+      return;
+    }
+
+    const nextPlayer: PlayerState = {
+      ...player,
+      hand: sortTiles(paddedHand),
+      drawnTile: canAssignDrawn ? (extraTile as TileStr) : null,
+      drawnFrom: canAssignDrawn ? "WALL" : null,
+      furitenTemp: false
+    };
+    let nextPhase = ensureState.phase;
+    if (isTurnSeat) {
+      if (nextPlayer.drawnTile && ensureState.phase === "BEFORE_DRAW") {
+        nextPhase = "AFTER_DRAW_MUST_DISCARD";
+      }
+      if (!nextPlayer.drawnTile && ensureState.phase === "AFTER_DRAW_MUST_DISCARD") {
+        nextPhase = "BEFORE_DRAW";
+      }
+    }
+    const nextState: GameState = {
+      ...ensureState,
+      players: { ...ensureState.players, [seat]: nextPlayer },
+      meta: { ...ensureState.meta, liveWall: nextLiveWall },
+      phase: nextPhase
+    };
+    checkTileConservation(nextState, "importImage");
+    setGameState(nextState);
+  };
+
+  const onImportImage = (seat: Seat) => {
+    setImageImportSeat(seat);
+    imageImportSeatRef.current = seat;
+    if (imageImportRef.current) {
+      imageImportRef.current.value = "";
+      imageImportRef.current.click();
+    }
+  };
+
+  const handleImageImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    const seat = imageImportSeatRef.current ?? imageImportSeat;
+    if (!file || !seat || imageImportBusy) {
+      if (!seat) appendActionLog("画像読込: 対象席が未設定です");
+      return;
+    }
+    setImageImportBusy(true);
+    try {
+      const result = await analyzeTilesFromImage(file);
+      if (!result.ok) {
+        appendActionLog(result.error ?? "画像解析に失敗しました");
+        return;
+      }
+      applyDetectedTilesToSeat(seat, result.tiles ?? []);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "画像解析に失敗しました";
+      appendActionLog(message);
+    } finally {
+      setImageImportBusy(false);
+      setImageImportSeat(null);
+      imageImportSeatRef.current = null;
+    }
+  };
+
   const openDoraPicker = (index: number) => {
     setPickerIndex(index);
     setPickerKind("dora");
+    setPickerBatch({ active: false, firstIndex: null });
     setPickerOpen(true);
   };
 
   const openUraPicker = (index: number) => {
     setPickerIndex(index);
     setPickerKind("ura");
+    setPickerBatch({ active: false, firstIndex: null });
     setPickerOpen(true);
   };
 
@@ -2232,13 +3110,72 @@ export const App = () => {
     setPickerSeat(seat);
     setPickerIndex(0);
     setPickerKind("rinshan");
+    setPickerBatch({ active: false, firstIndex: null });
     setPickerOpen(true);
+  };
+
+  const canSelectDrawTile = (seat: Seat, state: GameState | null = gameState ?? viewState) => {
+    if (!state) return false;
+    if (state.phase !== "BEFORE_DRAW") return false;
+    if (state.turn !== seat) return false;
+    const player = state.players[seat];
+    if (player.drawnTile) return false;
+    return stripTiles(player.hand).length === expectedHandCountBeforeDraw(player);
+  };
+
+  const openDrawPicker = (seat: Seat) => {
+    const baseState = gameState ?? viewState;
+    const canReplaceDraw =
+      Boolean(
+        gameState &&
+          gameState.turn === seat &&
+          gameState.phase === "AFTER_DRAW_MUST_DISCARD" &&
+          gameState.players[seat].drawnTile &&
+          gameState.players[seat].discards.length === 0
+      );
+    if (!canReplaceDraw && !canSelectDrawTile(seat, baseState)) {
+      if (baseState.turn === seat && baseState.phase === "BEFORE_DRAW") {
+        const expected = expectedHandCountBeforeDraw(baseState.players[seat]);
+        appendActionLog(`手牌枚数が不正です（現在:${stripTiles(baseState.players[seat].hand).length} / 期待:${expected}）`);
+      }
+      return;
+    }
+    if (!gameState) {
+      startGameFromOverrides();
+    }
+    setPickerSeat(seat);
+    setPickerIndex(0);
+    setPickerKind("draw");
+    setPickerBatch({ active: false, firstIndex: null });
+    setPickerOpen(true);
+  };
+
+  const refreshWinDoraCounts = (metaOverride?: RoundMeta) => {
+    if (!winOptionsOpen || !pendingWin || !gameState) return;
+    const seat = pendingWin.type === "ron" ? pendingWin.claim.by : pendingWin.seat;
+    const winTile =
+      pendingWin.type === "ron"
+        ? pendingWin.claim.tile
+        : gameState.players[seat]?.drawnTile ?? null;
+    if (!winTile) return;
+    const player = gameState.players[seat];
+    const hasRiichi = player.riichi || winOptions.is_daburu_riichi || winOptions.is_open_riichi;
+    const counts = computeDoraCountsForWin(metaOverride ?? gameState.meta, player, winTile, hasRiichi);
+    setWinOptions((prev) => ({
+      ...prev,
+      doraCount: counts.dora,
+      uraCount: counts.ura,
+      akaCount: counts.aka
+    }));
   };
 
   const applyTile = (tile: string | null) => {
     if (pickerIndex === null) return;
     const normalizedTile =
       tile && tile !== "BACK" ? canonicalTile(tile) : tile;
+    const isPlaceholderTile = (value: string) => !value || value === TILE_PLACEHOLDER;
+    const nextPlaceholderIndex = (tiles: string[]) => tiles.findIndex(isPlaceholderTile);
+    const shouldBatch = pickerKind === "hand" && pickerBatch.active;
     if (gameState) {
       if (pickerKind === "rinshan") {
         if (!normalizedTile) return;
@@ -2270,8 +3207,94 @@ export const App = () => {
         };
         checkTileConservation(nextState, "rinshan");
         setGameState(nextState);
+        appendActionLog(`${formatSeatForLog(seat)}ツモ: ${formatTileForLog(normalizedTile)}`);
         setPendingRinshan(null);
+        setPickerBatch({ active: false, firstIndex: null });
         setPickerOpen(false);
+        return;
+      }
+      if (pickerKind === "draw") {
+        if (!normalizedTile) return;
+        const seat = gameState.turn;
+        const player = gameState.players[seat];
+        if (gameState.phase === "BEFORE_DRAW") {
+          const expected = expectedHandCountBeforeDraw(player);
+          if (stripTiles(player.hand).length !== expected) {
+            appendActionLog(`手牌枚数が不正です（現在:${stripTiles(player.hand).length} / 期待:${expected}）`);
+            return;
+          }
+          let nextLiveWall = gameState.meta.liveWall ?? [];
+          const liveRemoved = removeOneExactThenNorm(nextLiveWall, normalizedTile);
+          if (liveRemoved.length !== nextLiveWall.length) {
+            nextLiveWall = liveRemoved;
+          } else {
+            appendActionLog("山にありません");
+            return;
+          }
+          const nextState: GameState = {
+            ...gameState,
+            players: {
+              ...gameState.players,
+              [seat]: {
+                ...player,
+                drawnTile: normalizedTile,
+                drawnFrom: "WALL",
+                furitenTemp: false
+              }
+            },
+            meta: {
+              ...gameState.meta,
+              liveWall: nextLiveWall
+            },
+            phase: "AFTER_DRAW_MUST_DISCARD"
+          };
+          checkTileConservation(nextState, "drawPicker");
+          setGameState(nextState);
+          appendActionLog(`${formatSeatForLog(seat)}ツモ: ${formatTileForLog(normalizedTile)}`);
+          setSelectedDiscard(null);
+          setPickerBatch({ active: false, firstIndex: null });
+          setPickerOpen(false);
+          return;
+        }
+        if (
+          gameState.phase === "AFTER_DRAW_MUST_DISCARD" &&
+          player.drawnTile &&
+          player.discards.length === 0
+        ) {
+          let nextLiveWall = gameState.meta.liveWall ?? [];
+          if (player.drawnFrom !== "CALL") {
+            nextLiveWall = [...nextLiveWall, player.drawnTile];
+          }
+          const removed = WallOps.removeWallTile(nextLiveWall, normalizedTile);
+          if (!removed.found) {
+            appendActionLog("山にありません");
+            return;
+          }
+          nextLiveWall = removed.next;
+          const nextState: GameState = {
+            ...gameState,
+            players: {
+              ...gameState.players,
+              [seat]: {
+                ...player,
+                drawnTile: removed.tile,
+                drawnFrom: "WALL",
+                furitenTemp: false
+              }
+            },
+            meta: {
+              ...gameState.meta,
+              liveWall: nextLiveWall
+            }
+          };
+          checkTileConservation(nextState, "drawReplace");
+          setGameState(nextState);
+          appendActionLog(`${formatSeatForLog(seat)}ツモ差替: ${formatTileForLog(removed.tile)}`);
+          setSelectedDiscard(null);
+          setPickerBatch({ active: false, firstIndex: null });
+          setPickerOpen(false);
+          return;
+        }
         return;
       }
       if (pickerKind === "dora" || pickerKind === "ura") {
@@ -2279,88 +3302,191 @@ export const App = () => {
         const desiredUra = [...(gameState.meta.uraDoraIndicators ?? [])];
         while (desiredDora.length <= pickerIndex) desiredDora.push("");
         while (desiredUra.length <= pickerIndex) desiredUra.push("");
-        let nextLiveWall = [...(gameState.meta.liveWall ?? [])];
+        const baseLiveWall = [...(gameState.meta.liveWall ?? [])];
+        let nextLiveWall = baseLiveWall;
         if (pickerKind === "dora") {
           const prevTile = desiredDora[pickerIndex] ?? "";
-          desiredDora[pickerIndex] = normalizedTile ?? "";
-          if (prevTile) nextLiveWall = [...nextLiveWall, prevTile];
-          if (normalizedTile) {
-            const removed = WallOps.removeWallTile(nextLiveWall, normalizedTile);
-            if (removed.found) {
-              nextLiveWall = removed.next;
+          const indicatorTile = normalizedTile && normalizedTile !== "BACK" ? normalizedTile : "";
+          let applied = false;
+          if (indicatorTile !== prevTile) {
+            if (prevTile) nextLiveWall = [...nextLiveWall, prevTile];
+            if (indicatorTile) {
+              const removed = WallOps.removeWallTile(nextLiveWall, indicatorTile);
+              if (removed.found) {
+                nextLiveWall = removed.next;
+                desiredDora[pickerIndex] = indicatorTile;
+                applied = true;
+              } else {
+                appendActionLog("山にありません");
+                nextLiveWall = baseLiveWall;
+                desiredDora[pickerIndex] = prevTile;
+              }
             } else {
-              appendActionLog("山にありません");
+              desiredDora[pickerIndex] = "";
+              applied = true;
             }
+          } else {
+            applied = true;
           }
+          const currentCount = gameState.meta.doraRevealedCount ?? 1;
+          const nextCount = applied && indicatorTile
+            ? Math.max(1, Math.min(5, Math.max(currentCount, pickerIndex + 1)))
+            : currentCount;
+          const nextState = {
+            ...gameState,
+            meta: {
+              ...gameState.meta,
+              liveWall: nextLiveWall,
+              doraIndicators: desiredDora,
+              uraDoraIndicators: desiredUra,
+              doraRevealedCount: nextCount
+            }
+          };
+          checkTileConservation(nextState, "pickDora");
+          setGameState(nextState);
+          refreshWinDoraCounts(nextState.meta);
+          setPickerBatch({ active: false, firstIndex: null });
+          setPickerOpen(false);
+          return;
         } else {
-          desiredUra[pickerIndex] = normalizedTile ?? "";
+          const indicatorTile = normalizedTile && normalizedTile !== "BACK" ? normalizedTile : "";
+          desiredUra[pickerIndex] = indicatorTile;
+          const nextState = {
+            ...gameState,
+            meta: {
+              ...gameState.meta,
+              liveWall: nextLiveWall,
+              doraIndicators: desiredDora,
+              uraDoraIndicators: desiredUra,
+              doraRevealedCount: gameState.meta.doraRevealedCount ?? 1
+            }
+          };
+          checkTileConservation(nextState, "pickUra");
+          setGameState(nextState);
+          refreshWinDoraCounts(nextState.meta);
+          setPickerBatch({ active: false, firstIndex: null });
+          setPickerOpen(false);
+          return;
         }
-        const nextCount =
-          pickerKind === "dora"
-            ? Math.max(1, Math.min(5, Math.max(gameState.meta.doraRevealedCount ?? 1, pickerIndex + 1)))
-            : gameState.meta.doraRevealedCount ?? 1;
-        const nextState = {
-          ...gameState,
-          meta: {
-            ...gameState.meta,
-            liveWall: nextLiveWall,
-            doraIndicators: desiredDora,
-            uraDoraIndicators: desiredUra,
-            doraRevealedCount: nextCount
-          }
-        };
-        setGameState(nextState);
       } else {
         const player = gameState.players[pickerSeat];
         const current = [...player.hand];
         while (current.length <= pickerIndex) current.push("");
-        current[pickerIndex] = normalizedTile ?? "";
+        let targetIndex = pickerIndex;
+        if (shouldBatch) {
+          if (pickerBatch.firstIndex !== null) {
+            targetIndex = pickerBatch.firstIndex;
+          } else {
+            const placeholderIdx = nextPlaceholderIndex(current);
+            if (placeholderIdx >= 0) targetIndex = placeholderIdx;
+          }
+        }
+        const prevTile = current[targetIndex] ?? "";
+        const nextTile = normalizedTile ?? "";
+        let nextLiveWall = gameState.meta.liveWall ?? [];
+        if (prevTile !== nextTile) {
+          const returnTile =
+            prevTile && prevTile !== TILE_PLACEHOLDER && prevTile !== TILE_BACK ? canonicalTile(prevTile) : "";
+          const takeTile =
+            nextTile && nextTile !== TILE_PLACEHOLDER && nextTile !== TILE_BACK ? canonicalTile(nextTile) : "";
+          if (returnTile) {
+            nextLiveWall = [...nextLiveWall, returnTile];
+          }
+          if (takeTile) {
+            const removed = WallOps.removeWallTile(nextLiveWall, takeTile);
+            if (!removed.found) {
+              appendActionLog("山にありません");
+              return;
+            }
+            nextLiveWall = removed.next;
+            current[targetIndex] = removed.tile;
+          } else {
+            current[targetIndex] = "";
+          }
+        }
+        const nextHand = sortTiles(current);
         const nextState = {
           ...gameState,
           players: {
             ...gameState.players,
-            [pickerSeat]: { ...player, hand: sortTiles(current) }
+            [pickerSeat]: { ...player, hand: nextHand }
+          },
+          meta: {
+            ...gameState.meta,
+            liveWall: nextLiveWall
           }
         };
+        checkTileConservation(nextState, "editHand");
         setGameState(nextState);
+        if (shouldBatch) {
+          const nextIdx = nextPlaceholderIndex(nextHand);
+          if (nextIdx >= 0) {
+            setPickerIndex(nextIdx);
+            setPickerBatch({ active: true, firstIndex: null });
+            return;
+          }
+          setPickerBatch({ active: false, firstIndex: null });
+        }
       }
     } else if (pickerKind === "dora") {
+      const indicatorTile = normalizedTile && normalizedTile !== "BACK" ? normalizedTile : "";
       setDoraOverrides((prev) => {
         const current = [...(prev[handKey] ?? Array(5).fill(""))];
-        current[pickerIndex] = normalizedTile ?? "";
+        current[pickerIndex] = indicatorTile;
         return { ...prev, [handKey]: current };
       });
       const nextCount = Math.max(1, Math.min(5, Math.max(metaOverrides?.doraRevealedCount ?? 1, pickerIndex + 1)));
-      setMetaOverrides((prev) => ({ ...(prev ?? {}), doraRevealedCount: nextCount }));
+      setMetaOverrides((prev) => ({ ...(prev ?? {}), doraRevealedCount: nextCount, liveWall: [], deadWall: [] }));
+      setPickerBatch({ active: false, firstIndex: null });
     } else if (pickerKind === "ura") {
+      const indicatorTile = normalizedTile && normalizedTile !== "BACK" ? normalizedTile : "";
       setUraOverrides((prev) => {
         const current = [...(prev[handKey] ?? Array(5).fill(""))];
-        current[pickerIndex] = normalizedTile ?? "";
+        current[pickerIndex] = indicatorTile;
         return { ...prev, [handKey]: current };
       });
-      const nextCount = Math.max(1, Math.min(5, Math.max(metaOverrides?.doraRevealedCount ?? 1, pickerIndex + 1)));
-      setMetaOverrides((prev) => ({ ...(prev ?? {}), doraRevealedCount: nextCount }));
+      setMetaOverrides((prev) => ({ ...(prev ?? {}), liveWall: [], deadWall: [] }));
+      setPickerBatch({ active: false, firstIndex: null });
     } else {
+      const base = step?.hands?.[pickerSeat] ?? Array(13).fill("");
+      const prevBySeat = handOverrides[handKey] ?? {};
+      const currentHand = [...(prevBySeat[pickerSeat] ?? base)];
+      while (currentHand.length <= pickerIndex) {
+        currentHand.push("");
+      }
+      let targetIndex = pickerIndex;
+      if (shouldBatch) {
+        if (pickerBatch.firstIndex !== null) {
+          targetIndex = pickerBatch.firstIndex;
+        } else {
+          const placeholderIdx = nextPlaceholderIndex(currentHand);
+          if (placeholderIdx >= 0) targetIndex = placeholderIdx;
+        }
+      }
+      currentHand[targetIndex] = normalizedTile ?? "";
+      const nextHand = sortTiles(currentHand);
       setHandOverrides((prev) => {
         const bySeat = { ...(prev[handKey] ?? {}) };
-        const base = step?.hands?.[pickerSeat] ?? Array(13).fill("");
-        const current = [...(bySeat[pickerSeat] ?? base)];
-        while (current.length <= pickerIndex) {
-          current.push("");
-        }
-        current[pickerIndex] = normalizedTile ?? "";
-        bySeat[pickerSeat] = sortTiles(current);
+        bySeat[pickerSeat] = nextHand;
         return { ...prev, [handKey]: bySeat };
       });
+      setMetaOverrides((prev) => ({ ...(prev ?? {}), liveWall: [], deadWall: [] }));
+      setMetaOverrides((prev) => ({ ...(prev ?? {}), liveWall: [], deadWall: [] }));
+      if (shouldBatch) {
+        const nextIdx = nextPlaceholderIndex(nextHand);
+        if (nextIdx >= 0) {
+          setPickerIndex(nextIdx);
+          setPickerBatch({ active: true, firstIndex: null });
+          return;
+        }
+        setPickerBatch({ active: false, firstIndex: null });
+      }
     }
     setPickerOpen(false);
   };
 
   const updateSettingsDraft = (updates: Partial<SettingsDraft>) => {
     if (!settingsDraft) return;
-    if (showSaved) {
-      setShowSaved(false);
-    }
     setSettingsDraft({ ...settingsDraft, ...updates });
   };
 
@@ -2370,27 +3496,17 @@ export const App = () => {
     }
   }, [settingsDraft, viewState.meta]);
 
-  const markSettingsSaved = () => {
-    if (savedTimerRef.current) {
-      window.clearTimeout(savedTimerRef.current);
-    }
-    setShowSaved(true);
-    savedTimerRef.current = window.setTimeout(() => {
-      setShowSaved(false);
-    }, 1500);
-  };
-
   const saveSettings = (draft: SettingsDraft | null = settingsDraft) => {
     if (!draft) return;
     const desiredDora = parseTiles(draft.doraIndicators);
     const desiredUra = parseTiles(draft.uraDoraIndicators);
+    const derivedDealer = getDealerFromKyoku(draft.kyoku);
     const nextMeta: Partial<RoundMeta> = {
       wind: draft.wind,
       kyoku: draft.kyoku,
       honba: draft.honba,
       riichiSticks: draft.riichiSticks,
-      dealer: draft.dealer,
-      points: { ...draft.points }
+      dealer: derivedDealer
     };
     if (gameState) {
       let nextLiveWall = [...(gameState.meta.liveWall ?? [])];
@@ -2413,7 +3529,6 @@ export const App = () => {
         meta: {
           ...gameState.meta,
           ...nextMeta,
-          points: nextMeta.points ?? gameState.meta.points,
           liveWall: nextLiveWall,
           deadWall: [],
           doraIndicators: desiredDora,
@@ -2425,14 +3540,15 @@ export const App = () => {
       setMetaOverrides((prev) => ({
         ...(prev ?? {}),
         ...nextMeta,
-        doraRevealedCount: desiredDora.length || desiredUra.length
-          ? Math.max(1, Math.min(5, Math.max(desiredDora.length, desiredUra.length)))
+        liveWall: [],
+        deadWall: [],
+        doraRevealedCount: desiredDora.length
+          ? Math.max(1, Math.min(5, desiredDora.length))
           : prev?.doraRevealedCount ?? 1
       }));
       setDoraOverrides((prev) => ({ ...prev, [handKey]: desiredDora }));
       setUraOverrides((prev) => ({ ...prev, [handKey]: desiredUra }));
     }
-    markSettingsSaved();
   };
 
   useEffect(() => {
@@ -2449,17 +3565,16 @@ export const App = () => {
     };
   }, [settingsDraft]);
 
-  useEffect(() => {
-    return () => {
-      if (savedTimerRef.current) {
-        window.clearTimeout(savedTimerRef.current);
-      }
-    };
-  }, []);
-
   const doDraw = () => {
     if (!gameState || gameState.phase !== "BEFORE_DRAW") return;
+    pushUndo();
     const seat = gameState.turn;
+    const player = gameState.players[seat];
+    const expected = expectedHandCountBeforeDraw(player);
+    if (stripTiles(player.hand).length !== expected) {
+      appendActionLog(`手牌枚数が不正です（現在:${stripTiles(player.hand).length} / 期待:${expected}）`);
+      return;
+    }
     const liveWall = gameState.meta.liveWall ?? [];
     if (!liveWall.length) {
       if (ENABLE_RANDOM_FALLBACK) {
@@ -2482,7 +3597,6 @@ export const App = () => {
     const popResult = WallOps.popWallTile(liveWall);
     const tile = popResult.tile;
     if (!tile) return;
-    const player = gameState.players[seat];
     const nextLiveWall = popResult.next;
     const nextState: GameState = {
       ...gameState,
@@ -2501,8 +3615,16 @@ export const App = () => {
 
   const doDrawWithTile = (tile: TileStr) => {
     if (!gameState || gameState.phase !== "BEFORE_DRAW") return;
+    pushUndo();
     const normalized = TileOps.canonicalTile(tile);
     if (!normalized) return;
+    const seat = gameState.turn;
+    const player = gameState.players[seat];
+    const expected = expectedHandCountBeforeDraw(player);
+    if (stripTiles(player.hand).length !== expected) {
+      appendActionLog(`手牌枚数が不正です（現在:${stripTiles(player.hand).length} / 期待:${expected}）`);
+      return;
+    }
     let liveWall = gameState.meta.liveWall ?? [];
     const removed = WallOps.removeWallTile(liveWall, normalized);
     if (!removed.found) {
@@ -2510,8 +3632,6 @@ export const App = () => {
       return;
     }
     liveWall = removed.next;
-    const seat = gameState.turn;
-    const player = gameState.players[seat];
     const nextState: GameState = {
       ...gameState,
       players: {
@@ -2529,6 +3649,7 @@ export const App = () => {
 
   const doDiscard = (tile: TileStr) => {
     if (!gameState || gameState.phase !== "AFTER_DRAW_MUST_DISCARD") return;
+    pushUndo();
     const seat = gameState.turn;
     const player = gameState.players[seat];
     if (pendingRinshan && pendingRinshan === seat && !player.drawnTile) {
@@ -2638,6 +3759,7 @@ export const App = () => {
 
   const advanceToNextDraw = () => {
     if (!gameState) return;
+    pushUndo();
     const ronSeats = callOptionsAll
       .filter((action) => action.type === "RON_WIN")
       .map((action) => action.by);
@@ -2673,6 +3795,7 @@ export const App = () => {
     selectedTiles?: TileStr[]
   ) => {
     if (!gameState) return;
+    pushUndo();
     const by = claim.by;
     const from = claim.from ?? gameState.lastDiscard?.seat ?? by;
     const tile = claim.tile || gameState.lastDiscard?.tile || "";
@@ -2905,17 +4028,45 @@ export const App = () => {
         });
       }
     }
+    const riichiPayout = Math.max(0, (gameState.meta.riichiSticks ?? 0)) * 1000;
+    if (riichiPayout > 0) {
+      points[winner] = (points[winner] ?? 0) + riichiPayout;
+    }
     return { nextPoints: points };
   };
 
-  const finalizeRon = (claim: Extract<LegalAction, { type: "RON_WIN" }>) => {
-    if (!gameState) return;
-    setGameState({ ...gameState, phase: "ENDED" });
-    appendActionLog("ロン");
+  const buildDefaultWinOptions = (seat: Seat, winType: "ron" | "tsumo", winTile: TileStr | null) => {
+    const base = { ...defaultWinOptions };
+    const player = gameState?.players[seat];
+    if (player) {
+      if (winType === "tsumo" && player.drawnFrom === "RINSHAN") {
+        base.is_rinshan = true;
+      }
+      if (gameState && winTile) {
+        const hasRiichi = player.riichi || base.is_daburu_riichi || base.is_open_riichi;
+        const counts = computeDoraCountsForWin(gameState.meta, player, winTile, hasRiichi);
+        base.doraCount = counts.dora;
+        base.uraCount = counts.ura;
+        base.akaCount = counts.aka;
+      }
+    }
+    return base;
   };
 
-  const applyRon = async (claim: Extract<LegalAction, { type: "RON_WIN" }>) => {
+  const openWinOptions = (next: { type: "ron"; claim: Extract<LegalAction, { type: "RON_WIN" }> } | { type: "tsumo"; seat: Seat }) => {
+    const seat = next.type === "ron" ? next.claim.by : next.seat;
+    const winTile =
+      next.type === "ron"
+        ? next.claim.tile
+        : gameState?.players[seat]?.drawnTile ?? null;
+    setWinOptions(buildDefaultWinOptions(seat, next.type, winTile));
+    setPendingWin(next);
+    setWinOptionsOpen(true);
+  };
+
+  const applyRon = async (claim: Extract<LegalAction, { type: "RON_WIN" }>, extraFlags?: WinOptionFlags) => {
     if (!gameState || !gameState.lastDiscard) return;
+    pushUndo();
     const winner = claim.by;
     const tile = claim.tile;
     const player = gameState.players[winner];
@@ -2924,22 +4075,53 @@ export const App = () => {
       return;
     }
     const context = buildScoreContext(gameState.meta, player, winner, tile, "ron");
-    const res = await scoreWinWithVariants(context).catch((err) => ({ ok: false, error: String(err) }));
-    const han = res?.result?.han ?? 0;
+    const res = await scoreWinWithVariants(context, extraFlags).catch((err) => ({ ok: false, error: String(err) }));
+    appendScoreDebug(res);
+    const adjustedResult = applyDoraOverridesToResult(res?.result, context, extraFlags);
+    const han = adjustedResult?.han ?? 0;
     if (!res?.ok || han <= 0) {
       setActionLog((prev) => [...prev, `ロン不可${formatScoreFailureDetail(res)}`]);
       return;
     }
-    const { nextPoints } = applyWinResult("ron", winner, res?.result, gameState.lastDiscard.seat);
+    const loserSeat = gameState.lastDiscard.seat;
+    const riichiDiscardIndex = riichiDiscards[loserSeat];
+    const lastDiscardIndex = gameState.players[loserSeat]?.discards.length
+      ? gameState.players[loserSeat].discards.length - 1
+      : null;
+    const isRiichiDeclarationRon =
+      riichiDiscardIndex != null && lastDiscardIndex != null && riichiDiscardIndex === lastDiscardIndex;
+    let { nextPoints } = applyWinResult("ron", winner, adjustedResult, loserSeat);
+    if (isRiichiDeclarationRon) {
+      nextPoints = {
+        ...nextPoints,
+        [winner]: (nextPoints[winner] ?? 0) - 1000,
+        [loserSeat]: (nextPoints[loserSeat] ?? 0) + 1000
+      };
+    }
     setGameState({
       ...gameState,
       meta: { ...gameState.meta, points: nextPoints, riichiSticks: 0 },
       phase: "ENDED"
     });
-    setWinInfo({ seat: gameState.lastDiscard.seat, tile, type: "ron" });
+    const doraCounts =
+      sanitizeDoraCounts(extraFlags) ??
+      computeDoraCountsForWin(
+        gameState.meta,
+        player,
+        tile,
+        player.riichi || Boolean(extraFlags?.is_daburu_riichi || extraFlags?.is_open_riichi)
+      );
+    setWinInfo({
+      seat: winner,
+      tile,
+      type: "ron",
+      result: adjustedResult,
+      from: loserSeat,
+      doraCounts
+    });
     appendActionLog([
       `${formatSeatForLog(winner)}ロン`,
-      formatScoreLine(res?.result),
+      formatScoreLine(adjustedResult),
       `点数: 東${nextPoints.E} 南${nextPoints.S} 西${nextPoints.W} 北${nextPoints.N}`
     ]);
   };
@@ -2950,7 +4132,54 @@ export const App = () => {
       (action): action is Extract<LegalAction, { type: "RON_WIN" }> => action.type === "RON_WIN"
     );
     if (!claim) return;
-    applyRon(claim);
+    openWinOptions({ type: "ron", claim });
+  };
+
+  const applyTsumoWin = async (extraFlags?: WinOptionFlags) => {
+    if (!gameState || gameState.phase !== "AFTER_DRAW_MUST_DISCARD") return;
+    pushUndo();
+    const winner = gameState.turn;
+    const player = gameState.players[winner];
+    if (player.drawnFrom === "CALL") return;
+    const winTile = player.drawnTile ?? "";
+    if (!winTile) return;
+    const context = buildScoreContext(gameState.meta, player, winner, winTile, "tsumo");
+    const res = await scoreWinWithVariants(context, extraFlags).catch((err) => ({ ok: false, error: String(err) }));
+    appendScoreDebug(res);
+    const adjustedResult = applyDoraOverridesToResult(res?.result, context, extraFlags);
+    const han = adjustedResult?.han ?? 0;
+    if (!res?.ok || han <= 0) {
+      setActionLog((prev) => [...prev, `ツモ和了不可${formatScoreFailureDetail(res)}`]);
+      return;
+    }
+    const { nextPoints } = applyWinResult("tsumo", winner, adjustedResult);
+    setGameState({
+      ...gameState,
+      meta: { ...gameState.meta, points: nextPoints, riichiSticks: 0 },
+      phase: "ENDED"
+    });
+    const doraCounts =
+      sanitizeDoraCounts(extraFlags) ??
+      computeDoraCountsForWin(
+        gameState.meta,
+        player,
+        winTile,
+        player.riichi || Boolean(extraFlags?.is_daburu_riichi || extraFlags?.is_open_riichi)
+      );
+    setWinInfo({
+      seat: winner,
+      tile: winTile,
+      type: "tsumo",
+      result: adjustedResult,
+      from: winner,
+      doraCounts
+    });
+    appendActionLog([
+      `${formatSeatForLog(winner)}ツモ`,
+      ...(player.closed ? ["門前ツモ"] : []),
+      formatScoreLine(adjustedResult),
+      `点数: 東${nextPoints.E} 南${nextPoints.S} 西${nextPoints.W} 北${nextPoints.N}`
+    ]);
   };
 
   const doTsumoWin = async () => {
@@ -2958,28 +4187,19 @@ export const App = () => {
     const winner = gameState.turn;
     const player = gameState.players[winner];
     if (player.drawnFrom === "CALL") return;
-    const winTile = player.drawnTile ?? "";
-    if (!winTile) return;
-    const context = buildScoreContext(gameState.meta, player, winner, winTile, "tsumo");
-    const res = await scoreWinWithVariants(context).catch((err) => ({ ok: false, error: String(err) }));
-    const han = res?.result?.han ?? 0;
-    if (!res?.ok || han <= 0) {
-      setActionLog((prev) => [...prev, `ツモ和了不可${formatScoreFailureDetail(res)}`]);
-      return;
+    if (!player.drawnTile) return;
+    openWinOptions({ type: "tsumo", seat: winner });
+  };
+
+  const confirmWinOptions = async () => {
+    if (!pendingWin) return;
+    if (pendingWin.type === "ron") {
+      await applyRon(pendingWin.claim, winOptions);
+    } else {
+      await applyTsumoWin(winOptions);
     }
-    const { nextPoints } = applyWinResult("tsumo", winner, res?.result);
-    setGameState({
-      ...gameState,
-      meta: { ...gameState.meta, points: nextPoints, riichiSticks: 0 },
-      phase: "ENDED"
-    });
-    setWinInfo({ seat: winner, tile: winTile, type: "tsumo" });
-    appendActionLog([
-      `${formatSeatForLog(winner)}ツモ`,
-      ...(player.closed ? ["門前ツモ"] : []),
-      formatScoreLine(res?.result),
-      `点数: 東${nextPoints.E} 南${nextPoints.S} 西${nextPoints.W} 北${nextPoints.N}`
-    ]);
+    setPendingWin(null);
+    setWinOptionsOpen(false);
   };
 
   const doRiichi = () => {
@@ -3004,6 +4224,7 @@ export const App = () => {
 
   const doSelfKan = () => {
     if (!gameState || gameState.phase !== "AFTER_DRAW_MUST_DISCARD") return;
+    pushUndo();
     const seat = gameState.turn;
     const player = gameState.players[seat];
     if (player.riichi) return;
@@ -3095,13 +4316,19 @@ export const App = () => {
     };
     checkTileConservation(nextState, "doSelfKan");
     setGameState(nextState);
-    appendActionLog("カン");
+    const kanTileLabel = closedTarget ?? addedTarget ?? "";
+    if (kanTileLabel) {
+      appendActionLog(`${formatSeatForLog(seat)}カン: ${formatTileForLog(kanTileLabel)}`);
+    } else {
+      appendActionLog("カン");
+    }
     setPendingRinshan(seat);
     openRinshanPicker(seat);
   };
 
   useEffect(() => {
     if (!gameState || gameState.phase !== "AWAITING_CALL") return;
+    if (undoGuardRef.current) return;
     if (tenpaiChecking) return;
     if (callOptionsAll.length === 0) {
       advanceToNextDraw();
@@ -3110,6 +4337,7 @@ export const App = () => {
 
   useEffect(() => {
     if (!gameState || gameState.phase !== "AFTER_DRAW_MUST_DISCARD") {
+      if (undoGuardRef.current) return;
       setPendingRiichi(false);
     }
   }, [gameState]);
@@ -3151,119 +4379,26 @@ export const App = () => {
   const rightPanelProps = {
     showButtons: true,
     initialLocked,
-    showSaved,
-    onLogStart: runImmediate(handleLogStart),
     onRandomHands: runImmediate(handleRandomHands),
     onLogClear: runImmediate(handleLogClear),
     onClearHands: runImmediate(handleClearHands),
+    onLogExport: exportLog,
+    onUndo: undoLast,
+    undoDisabled: undoCount === 0,
     onPickDora: runImmediate(openDoraPicker),
-    onPickUra: runImmediate(openUraPicker),
-    doraIndicators: getDoraIndicators(viewState.meta),
-    uraDoraIndicators: getUraDoraIndicators(viewState.meta),
+    doraDisplayTiles: getDoraDisplayTiles(viewState.meta),
     doraRevealedCount: viewState.meta.doraRevealedCount ?? 1,
     getTileSrc,
     settingsDraft,
     onUpdateSettingsDraft: updateSettingsDraft,
-    viewState,
     tenpaiChecking,
     tenpaiError,
     rulesErrors,
     actionLog
   };
 
-  const renderTileImage = (
-    tile: string,
-    idx: number,
-    onClick?: () => void,
-    size: { w: number; h: number } = { w: TILE_W, h: TILE_H }
-  ) => {
-    if (!tile) return null;
-    if (tile === TILE_PLACEHOLDER || tile === TILE_BACK) {
-      return (
-        <span
-          key={`${tile}-${idx}`}
-          className={tile === TILE_BACK ? "tile-back" : "tile-placeholder"}
-          style={{ width: size.w, height: size.h, cursor: onClick ? "pointer" : "default" }}
-          onClick={onClick}
-        />
-      );
-    }
-    const src = tileToAsset(tile);
-    const style: CSSProperties = {
-      width: `${size.w}px`,
-      height: `${size.h}px`,
-      cursor: onClick ? "pointer" : "default"
-    };
-    if (src) {
-      return (
-        <img
-          key={`${tile}-${idx}`}
-          className="tile-img"
-          src={src}
-          alt={tile}
-          style={style}
-          onClick={onClick}
-        />
-      );
-    }
-    return (
-      <span key={`${tile}-${idx}`} onClick={onClick} style={{ cursor: onClick ? "pointer" : "default" }}>
-        {tile}
-      </span>
-    );
-  };
-
-  const renderTileRow = (tiles: TileStr[], size?: { w: number; h: number }) => {
-    const visible = tiles.filter((tile) => tile && tile !== "BACK" && tile !== "PLACEHOLDER");
-    if (!visible.length) return <span>なし</span>;
-    return <span>{visible.map((tile, idx) => renderTileImage(tile, idx, undefined, size))}</span>;
-  };
-
-  const renderDiscardRow = (seat: Seat, tiles: TileStr[]) => {
-    if (!tiles.length) return <span className="discard-empty">河</span>;
-    const riichiIndex = riichiDiscards[seat];
-    const renderDiscardTile = (tile: TileStr, idx: number) => {
-      const sideways = riichiIndex !== null && riichiIndex === idx;
-      const wrapStyle: CSSProperties = {
-        width: sideways ? MELD_TILE_H : MELD_TILE_W,
-        height: sideways ? MELD_TILE_W : MELD_TILE_H,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center"
-      };
-      const imgStyle: CSSProperties = {
-        width: MELD_TILE_W,
-        height: MELD_TILE_H,
-        transform: sideways ? "rotate(90deg)" : "none"
-      };
-      if (tile === TILE_PLACEHOLDER || tile === TILE_BACK) {
-        return (
-          <span
-            key={`discard-${seat}-${idx}`}
-            className={tile === TILE_BACK ? "tile-back" : "tile-placeholder"}
-            style={wrapStyle}
-          />
-        );
-      }
-      const src = tileToAsset(tile);
-      if (src) {
-        return (
-          <span key={`discard-${seat}-${idx}`} className="discard-tile-wrap" style={wrapStyle}>
-            <img className="discard-tile-img" src={src} alt={tile} style={imgStyle} />
-          </span>
-        );
-      }
-      return (
-        <span key={`discard-${seat}-${idx}`} className="discard-tile-wrap" style={wrapStyle}>
-          {tile}
-        </span>
-      );
-    };
-    return <span className="discard-row">{tiles.map((tile, idx) => renderDiscardTile(tile, idx))}</span>;
-  };
-
-  const buildSeatActions = (seat: Seat, player: PlayerState) => {
-    const actions: { key: string; label: string; onClick: () => void; disabled?: boolean }[] = [];
+  const buildSeatActions = useCallback((seat: Seat, player: PlayerState) => {
+    const actions: SeatAction[] = [];
     if (!gameState) return actions;
     if (pendingRinshan === seat) return actions;
     if (gameState.phase === "AFTER_DRAW_MUST_DISCARD" && gameState.turn === seat) {
@@ -3285,7 +4420,7 @@ export const App = () => {
       const seatCalls = callOptionsAll.filter((action) => action.by === seat);
       seatCalls.forEach((action, idx) => {
         if (action.type === "RON_WIN") {
-          actions.push({ key: `ron-${idx}`, label: "ロン", onClick: () => applyRon(action) });
+          actions.push({ key: `ron-${idx}`, label: "ロン", onClick: () => openWinOptions({ type: "ron", claim: action }) });
         } else if (action.type === "CHI" || action.type === "PON" || action.type === "KAN") {
           const label = action.type === "CHI" ? "チー" : action.type === "PON" ? "ポン" : "カン";
           actions.push({ key: `${action.type}-${idx}`, label, onClick: () => openCallPicker(action) });
@@ -3296,166 +4431,132 @@ export const App = () => {
       }
     }
     return actions;
-  };
+  }, [
+    gameState,
+    pendingRinshan,
+    riichiAllowed,
+    pendingRiichi,
+    tenpaiFlags,
+    callOptionsAll,
+    doRiichi,
+    cancelRiichiDeclaration,
+    doTsumoWin,
+    doSelfKan,
+    openWinOptions,
+    openCallPicker,
+    advanceToNextDraw
+  ]);
 
-  const handleHandTileClick = (seat: Seat, tile: TileStr, index: number) => {
+  const handleHandTileClick = useCallback((seat: Seat, tile: TileStr, index: number, event?: ReactMouseEvent) => {
     if (!tile) return;
     if (gameState) {
-      if (gameState.phase !== "AFTER_DRAW_MUST_DISCARD") return;
-      if (gameState.turn !== seat) return;
-      doDiscard(tile);
+      const player = gameState.players[seat];
+      const canEditInitial = player.discards.length === 0;
+      const wantsEdit = Boolean(event?.shiftKey) && canEditInitial;
+      if (gameState.phase === "AFTER_DRAW_MUST_DISCARD" && gameState.turn === seat && !wantsEdit) {
+        doDiscard(tile);
+        return;
+      }
+      if (canEditInitial) {
+        openPicker(seat, index, tile, true);
+      }
       return;
     }
     openPicker(seat, index, tile);
-  };
+  }, [gameState, doDiscard, openPicker]);
 
-  const renderHandRow = (seat: Seat, player: PlayerState) => {
-    const clickable = !gameState || (gameState.phase === "AFTER_DRAW_MUST_DISCARD" && gameState.turn === seat);
-    const tiles = player.hand ?? [];
-    const hasAny = tiles.some((tile) => tile);
-    if (!hasAny && !player.drawnTile) return <span>なし</span>;
-    return (
-      <span>
-        {tiles.map((tile, idx) =>
-          tile
-            ? renderTileImage(tile, idx, clickable ? () => handleHandTileClick(seat, tile, idx) : undefined)
-            : null
-        )}
-        {player.drawnTile ? (
-          <span style={{ marginLeft: 8 }}>
-            {renderTileImage(
-              player.drawnTile,
-              tiles.length,
-              clickable ? () => handleHandTileClick(seat, player.drawnTile ?? "", tiles.length) : undefined
-            )}
-          </span>
-        ) : null}
-      </span>
-    );
-  };
+  const handleHandTileContextMenu = useCallback(
+    (seat: Seat, tile: TileStr, index: number, event: ReactMouseEvent) => {
+      if (!gameState) return;
+      const player = gameState.players[seat];
+      if (player.discards.length !== 0) return;
+      event.preventDefault();
+      if (player.drawnTile && index >= player.hand.length && gameState.turn === seat) {
+        openDrawPicker(seat);
+        return;
+      }
+      openPicker(seat, index, tile, true);
+    },
+    [gameState, openPicker, openDrawPicker]
+  );
 
-  const renderMeldBlock = (meld: Meld, idx: number, owner: Seat) => {
-    const meldOwner = meld.by ?? owner;
-    const calledIndex =
-      meld.calledTile ? calledIndexFor(meldOwner, meld.calledFrom ?? meldOwner, meld.tiles.length) : -1;
-    const renderMeldTile = (tile: TileStr, tileIdx: number) => {
-      const sideways = tileIdx === calledIndex;
-      const wrapStyle: CSSProperties = {
-        width: sideways ? MELD_TILE_H : MELD_TILE_W,
-        height: sideways ? MELD_TILE_W : MELD_TILE_H,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center"
-      };
-      const imgStyle: CSSProperties = {
-        width: MELD_TILE_W,
-        height: MELD_TILE_H,
-        transform: sideways ? "rotate(90deg)" : "none"
-      };
-      if (tile === TILE_PLACEHOLDER || tile === TILE_BACK) {
-        return (
-          <span
-            key={`meld-${idx}-${tileIdx}`}
-            className={tile === TILE_BACK ? "tile-back" : "tile-placeholder"}
-            style={wrapStyle}
-          />
-        );
+  const handleDrawTileClick = useCallback((seat: Seat) => {
+    openDrawPicker(seat);
+  }, [openDrawPicker]);
+
+  const editableBySeat = useMemo(() => {
+    if (!gameState) return { E: true, S: true, W: true, N: true };
+    const base = { E: false, S: false, W: false, N: false };
+    SEAT_LIST.forEach((seat) => {
+      const player = gameState.players[seat];
+      if (player.discards.length === 0) {
+        base[seat] = true;
       }
-      const src = tileToAsset(tile);
-      if (src) {
-        return (
-          <span key={`meld-${idx}-${tileIdx}`} className="meld-tile-wrap" style={wrapStyle}>
-            <img className="meld-tile-img" src={src} alt={tile} style={imgStyle} />
-          </span>
-        );
+    });
+    return base;
+  }, [gameState]);
+
+  const clickableBySeat = useMemo(() => {
+    if (!gameState) return { E: true, S: true, W: true, N: true };
+    const base = { E: false, S: false, W: false, N: false };
+    if (gameState.phase === "AFTER_DRAW_MUST_DISCARD") {
+      base[gameState.turn] = true;
+    }
+    SEAT_LIST.forEach((seat) => {
+      const player = gameState.players[seat];
+      if (player.discards.length === 0) {
+        base[seat] = true;
       }
-      return (
-        <span key={`meld-${idx}-${tileIdx}`} className="meld-tile-wrap" style={wrapStyle}>
-          {tile}
-        </span>
-      );
-    };
-    return (
-      <div key={`meld-${idx}`} className="meld-row">
-        {meld.tiles.map((tile, tileIdx) => renderMeldTile(tile, tileIdx))}
-      </div>
-    );
-  };
+    });
+    return base;
+  }, [gameState]);
+
+  const { seatSummaryItems, seatBlockItems } = useSeatViewModel({
+    seatOrder,
+    viewState,
+    waitsBySeat,
+    tenpaiFlags,
+    seatNames,
+    windLabels: WIND_LABELS,
+    buildSeatActions,
+    updateSeatName,
+    updateSeatPoints,
+    clickableBySeat,
+    editableBySeat,
+    riichiDiscards
+  });
+
+  const pickerAnchorPosition = useMemo<"above" | "below" | null>(() => {
+    if (!pickerOpen) return null;
+    if (!["hand", "draw", "rinshan"].includes(pickerKind)) return null;
+    const idx = seatBlockItems.findIndex((item) => item.seat === pickerSeat);
+    if (idx < 0) return null;
+    return idx < 2 ? "below" : "above";
+  }, [pickerOpen, pickerKind, pickerSeat, seatBlockItems]);
+  const pendingWinSeat =
+    pendingWin?.type === "ron" ? pendingWin.claim.by : pendingWin?.type === "tsumo" ? pendingWin.seat : null;
+  const showUraIndicators = Boolean(
+    pendingWinSeat &&
+      (viewState.players[pendingWinSeat]?.riichi ||
+        winOptions.is_daburu_riichi ||
+        winOptions.is_open_riichi)
+  );
 
   return (
     <div className="app-shell">
-      <div className="seat-summary-bar">
-        <div className="seat-summary-row">
-          {SEAT_LIST.map((seat) => {
-            const player = viewState.players[seat];
-            const isTurn = seat === viewState.turn;
-            const statusLabel = player.riichi ? "リーチ" : tenpaiFlags[seat] ? "テンパイ" : "";
-            const statusClass = player.riichi ? "status-riichi" : "status-tenpai";
-            return (
-              <div key={`seat-summary-${seat}`} className={`seat-summary${isTurn ? " is-turn" : ""}`}>
-                <div className="seat-summary-body">
-                  <div className="seat-summary-avatar-col">
-                    <div className="seat-summary-avatar-box">
-                      <div className="seat-summary-avatar">
-                        <svg className="avatar-icon" viewBox="0 0 64 64" role="img" aria-label="player">
-                          <circle cx="32" cy="22" r="12" />
-                          <path d="M12 54c0-10 9-18 20-18s20 8 20 18v4H12z" />
-                        </svg>
-                      </div>
-                      {statusLabel && (
-                        <div className={`seat-summary-status ${statusClass}`}>{statusLabel}</div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="seat-summary-info">
-                    <div className="seat-summary-name-row">
-                      <span className="seat-summary-wind-label">{WIND_LABELS[seat]} :</span>
-                      <input
-                        className="seat-summary-name-input"
-                        value={seatNames[seat] ?? ""}
-                        onChange={(e) => updateSeatName(seat, e.target.value)}
-                      />
-                    </div>
-                    <div className="seat-summary-points-row">
-                      <input
-                        className="seat-summary-points-input"
-                        type="number"
-                        value={viewState.meta.points[seat]}
-                        onChange={(e) => updateSeatPoints(seat, Number(e.target.value))}
-                      />
-                      <span className="points-unit">点</span>
-                    </div>
-                    {waitsBySeat[seat]?.length ? (
-                      <div className="seat-summary-waits">
-                        <span className="waits-label">待ち</span>
-                        <span className="waits-tiles">
-                          {waitsBySeat[seat].map((tile, idx) => {
-                            const src = tileToAsset(tile);
-                            const count = remainingCountForDisplay(tile);
-                            return (
-                              <span key={`wait-${seat}-${idx}`} className="waits-tile">
-                                {src ? (
-                                  <img className="waits-tile-img" src={src} alt={tile} />
-                                ) : (
-                                  <span className="waits-tile-placeholder" />
-                                )}
-                                <span className="waits-count">{count}</span>
-                              </span>
-                            );
-                          })}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="seat-summary-waits empty" />
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <div className="app-container" style={{ display: "flex", gap: 16 }}>
+      <input
+        ref={imageImportRef}
+        type="file"
+        accept="image/*"
+        onChange={handleImageImport}
+        style={{ display: "none" }}
+      />
+      <SeatSummaryBar
+        items={seatSummaryItems}
+        tileToAsset={tileToAsset}
+        remainingCountForDisplay={remainingCountForDisplay}
+      />
+      <div className="app-container">
         <LeftTools
           wallRemaining={totalWallRemaining}
           remainingTiles={remainingTiles}
@@ -3463,56 +4564,28 @@ export const App = () => {
           showRemaining
           getTileSrc={getTileSrc}
         />
-        <div className="center-column" style={{ flex: 1, padding: 4, display: "flex", justifyContent: "center" }}>
-          <div className="simple-list" style={{ width: "100%", maxWidth: 1000 }}>
-            {SEAT_LIST.map((seat) => {
-              const player = viewState.players[seat];
-              const seatActions = buildSeatActions(seat, player);
-              return (
-                <div
-                  key={`seat-${seat}`}
-                  className={`seat-block${seat === viewState.turn ? " is-turn" : ""}`}
-                >
-                  <div className="seat-block-row">
-                    <div className="seat-block-main">
-                      <div className="seat-title-row">
-                        <div className="seat-title">
-                          <span>{`${WIND_LABELS[seat]}家`}</span>
-                        </div>
-                        {seatActions.length > 0 && (
-                          <div className="seat-title-actions">
-                            {seatActions.map((action) => (
-                              <button
-                                key={`${seat}-${action.key}`}
-                                className="action-button"
-                                type="button"
-                                onClick={action.onClick}
-                                disabled={action.disabled}
-                              >
-                                {action.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="hand-row">
-                        <div className="hand-tiles">{renderHandRow(seat, player)}</div>
-                        <div className="melds-inline">
-                          {player.melds.length ? (
-                            [...player.melds].reverse().map((meld, idx) => renderMeldBlock(meld, idx, seat))
-                          ) : (
-                            <div className="meld-empty"></div>
-                          )}
-                        </div>
-                      </div>
-                      <div className="discard-block">
-                        {renderDiscardRow(seat, player.discards)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+        <div className="center-column">
+          <div className="simple-list">
+            {seatBlockItems.map((item) => (
+              <SeatBlock
+                key={`seat-${item.seat}`}
+                item={item}
+                onHandTileClick={handleHandTileClick}
+                onHandTileContextMenu={handleHandTileContextMenu}
+                onDrawTileClick={handleDrawTileClick}
+                showDrawPlaceholder={canSelectDrawTile(item.seat)}
+                onImportImage={onImportImage}
+                importDisabled={imageImportBusy}
+                tileToAsset={tileToAsset}
+                tileBack={TILE_BACK}
+                tilePlaceholder={TILE_PLACEHOLDER}
+                tileWidth={TILE_W}
+                tileHeight={TILE_H}
+                meldTileWidth={MELD_TILE_W}
+                meldTileHeight={MELD_TILE_H}
+                calledIndexFor={calledIndexFor}
+              />
+            ))}
           </div>
         </div>
         <RightPanel {...rightPanelProps} />
@@ -3521,13 +4594,34 @@ export const App = () => {
       <PickerModal
         open={pickerOpen}
         kind={pickerKind}
+        anchorPosition={pickerAnchorPosition}
         isTileAvailable={isTileAvailable}
         remainingCount={remainingCountForPicker}
         tileToAsset={tileToAsset}
         onSelect={applyTile}
         onClose={() => {
           if (pickerKind === "rinshan") return;
+          setPickerBatch({ active: false, firstIndex: null });
           setPickerOpen(false);
+        }}
+      />
+
+      <WinOptionsModal
+        open={winOptionsOpen}
+        winType={pendingWin?.type ?? null}
+        options={winOptions}
+        doraIndicators={getDoraIndicators(viewState.meta)}
+        showUraIndicators={showUraIndicators}
+        uraDoraIndicators={getUraDoraIndicators(viewState.meta)}
+        doraRevealedCount={viewState.meta.doraRevealedCount ?? 1}
+        getTileSrc={getTileSrc}
+        onPickDora={runImmediate(openDoraPicker)}
+        onPickUra={runImmediate(openUraPicker)}
+        onChange={setWinOptions}
+        onConfirm={confirmWinOptions}
+        onCancel={() => {
+          setWinOptionsOpen(false);
+          setPendingWin(null);
         }}
       />
 
@@ -3545,18 +4639,22 @@ export const App = () => {
                 >
                   <div className="call-picker-label">{option.label}</div>
                   <div className="call-picker-tiles">
-                    {renderMeldBlock(
-                      {
+                    <MeldTiles
+                      meld={{
                         kind: option.type,
                         tiles: option.meldTiles,
                         by: option.by,
                         calledFrom: option.from,
-                        calledTile: option.tile,
-                        open: true
-                      },
-                      idx,
-                      option.by
-                    )}
+                        calledTile: option.tile
+                      }}
+                      owner={option.by}
+                      tileToAsset={tileToAsset}
+                      tileBack={TILE_BACK}
+                      tilePlaceholder={TILE_PLACEHOLDER}
+                      meldTileWidth={MELD_TILE_W}
+                      meldTileHeight={MELD_TILE_H}
+                      calledIndexFor={calledIndexFor}
+                    />
                   </div>
                 </button>
               ))}

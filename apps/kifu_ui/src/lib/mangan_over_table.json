@@ -1,0 +1,36 @@
+{
+  "points": {
+    "ron": {
+      "dealer": {
+        "mangan": "12000点",
+        "haneman": "18000点",
+        "baiman": "24000点",
+        "sanbaiman": "36000点",
+        "yakuman": "48000点"
+      },
+      "nonDealer": {
+        "mangan": "8000点",
+        "haneman": "12000点",
+        "baiman": "16000点",
+        "sanbaiman": "24000点",
+        "yakuman": "32000点"
+      }
+    },
+    "tsumo": {
+      "dealer": {
+        "mangan": "4000点∀",
+        "haneman": "6000点∀",
+        "baiman": "8000点∀",
+        "sanbaiman": "12000点∀",
+        "yakuman": "16000点∀"
+      },
+      "nonDealer": {
+        "mangan": "2000-4000点",
+        "haneman": "3000-6000点",
+        "baiman": "4000-8000点",
+        "sanbaiman": "6000-12000点",
+        "yakuman": "8000-16000点"
+      }
+    }
+  }
+}
