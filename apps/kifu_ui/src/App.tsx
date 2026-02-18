@@ -3189,9 +3189,19 @@ export const App = () => {
   const startScreenCapture = useCallback(async () => {
       if (captureStarting || captureAnalyzing) return;
       if (captureStream) return;
+      const mediaDevices = globalThis.navigator?.mediaDevices;
+      const hasDisplayMedia = Boolean(mediaDevices && typeof mediaDevices.getDisplayMedia === "function");
+      if (!hasDisplayMedia) {
+        appendActionLog("画面共有に非対応の環境です（HTTPS または localhost で開いてください）");
+        return;
+      }
+      if (typeof window !== "undefined" && !window.isSecureContext) {
+        appendActionLog("画面共有は安全な接続（HTTPS）でのみ利用できます");
+        return;
+      }
       setCaptureStarting(true);
       try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({
+        const stream = await mediaDevices.getDisplayMedia({
           video: true,
           audio: false
         });
