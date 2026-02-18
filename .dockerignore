@@ -13,3 +13,4 @@ apps/kifu_ui/dist
 
 # keep only runtime inference weight
 mahjong_runtime/weights/*
+!mahjong_runtime/weights/best.pt
