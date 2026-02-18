@@ -9,6 +9,7 @@ import { useSeatViewModel } from "./hooks/useSeatViewModel";
 import {
   buildJapaneseYakuList,
   computeDoraCountsForWin,
+  doraFromIndicator,
   formatScoreSummaryForLog,
   getDoraDisplayTiles,
   getDoraIndicators,
@@ -1145,9 +1146,9 @@ type WinOptionsModalProps = {
   open: boolean;
   winType: "ron" | "tsumo" | null;
   options: WinOptionFlags;
-  doraIndicators: TileStr[];
+  doraDisplayTiles: TileStr[];
   showUraIndicators: boolean;
-  uraDoraIndicators: TileStr[];
+  uraDisplayTiles: TileStr[];
   doraRevealedCount: number;
   getTileSrc: (tile: string) => string | null;
   onPickDora: (index: number) => void;
@@ -1161,9 +1162,9 @@ const WinOptionsModal = ({
   open,
   winType,
   options,
-  doraIndicators,
+  doraDisplayTiles,
   showUraIndicators,
-  uraDoraIndicators,
+  uraDisplayTiles,
   doraRevealedCount,
   getTileSrc,
   onPickDora,
@@ -1195,9 +1196,9 @@ const WinOptionsModal = ({
           <div className="win-options-title">ドラ</div>
           <div className="dora-tiles">
             {Array.from({ length: 5 }, (_, idx) => {
-              const indicator = doraIndicators[idx] ?? "";
-              const revealed = idx < doraRevealedCount && indicator;
-              const src = revealed ? getTileSrc(indicator) : null;
+              const displayTile = doraDisplayTiles[idx] ?? "";
+              const revealed = idx < doraRevealedCount && displayTile;
+              const src = revealed ? getTileSrc(displayTile) : null;
               return (
                 <button
                   key={`win-dora-${idx}`}
@@ -1217,9 +1218,9 @@ const WinOptionsModal = ({
             <div className="win-options-title">裏ドラ</div>
             <div className="dora-tiles dora-tiles-ura">
               {Array.from({ length: 5 }, (_, idx) => {
-                const indicator = uraDoraIndicators[idx] ?? "";
-                const revealed = idx < doraRevealedCount && indicator;
-                const src = revealed ? getTileSrc(indicator) : null;
+                const displayTile = uraDisplayTiles[idx] ?? "";
+                const revealed = idx < doraRevealedCount && displayTile;
+                const src = revealed ? getTileSrc(displayTile) : null;
                 return (
                   <button
                     key={`win-ura-${idx}`}
@@ -2793,6 +2794,16 @@ export const App = () => {
       seatState[seat].lastDiscardIndex = seatState[seat].discards.length;
       seatState[seat].discards.push(value);
     };
+    const pushDrawValue = (seat: Seat, tile: TileStr, replaceLast = false) => {
+      const code = tileToLogCode(tile);
+      if (code === null) return;
+      if (replaceLast && seatState[seat].draws.length > 0) {
+        seatState[seat].draws[seatState[seat].draws.length - 1] = code;
+      } else {
+        seatState[seat].draws.push(code);
+      }
+      seatState[seat].lastDraw = tile;
+    };
 
     const applySelfKanLog = (seat: Seat, kanTile: TileStr | null) => {
       const lastDraw = seatState[seat].lastDraw;
@@ -2824,7 +2835,7 @@ export const App = () => {
 
     let lastSeat: Seat | null = null;
     actionLog.forEach((line) => {
-      const actionMatch = line.match(/^([東南西北])(ツモ|ステ|チー|ポン|カン):\s*(.+)$/);
+      const actionMatch = line.match(/^([東南西北])(ツモ差替|ツモ|ステ|チー|ポン|カン):\s*(.+)$/);
       if (actionMatch) {
         const seat = SEAT_LABEL_TO_SEAT[actionMatch[1]];
         const action = actionMatch[2];
@@ -2832,11 +2843,9 @@ export const App = () => {
         const tile = logTokenToTile(tileToken);
         if (!seat) return;
         lastSeat = seat;
-        if (action === "ツモ") {
+        if (action === "ツモ" || action === "ツモ差替") {
           if (!tile) return;
-          const code = tileToLogCode(tile);
-          if (code !== null) seatState[seat].draws.push(code);
-          seatState[seat].lastDraw = tile;
+          pushDrawValue(seat, tile, action === "ツモ差替");
           return;
         }
         if (action === "ステ") {
@@ -3184,6 +3193,10 @@ export const App = () => {
       };
     }
     setGameState(nextState);
+    if (canAssignDrawn && extraTile) {
+      const action = player.drawnTile ? "ツモ差替" : "ツモ";
+      appendActionLog(`${formatSeatForLog(seat)}${action}: ${formatTileForLog(extraTile)}`);
+    }
   };
 
   const startScreenCapture = useCallback(async () => {
@@ -4802,9 +4815,9 @@ export const App = () => {
         open={winOptionsOpen}
         winType={pendingWin?.type ?? null}
         options={winOptions}
-        doraIndicators={getDoraIndicators(viewState.meta)}
+        doraDisplayTiles={getDoraDisplayTiles(viewState.meta)}
         showUraIndicators={showUraIndicators}
-        uraDoraIndicators={getUraDoraIndicators(viewState.meta)}
+        uraDisplayTiles={getUraDoraIndicators(viewState.meta).map((tile) => doraFromIndicator(tile) ?? "")}
         doraRevealedCount={viewState.meta.doraRevealedCount ?? 1}
         getTileSrc={getTileSrc}
         onPickDora={runImmediate(openDoraPicker)}
