@@ -42,14 +42,16 @@ export const SeatBlock = ({
     idx: number,
     onClick?: (event: MouseEvent) => void,
     onContextMenu?: (event: MouseEvent) => void,
-    size: { w: number; h: number } = { w: tileWidth, h: tileHeight }
+    size: { w: number; h: number } = { w: tileWidth, h: tileHeight },
+    extraClassName = ""
   ) => {
     if (!tile) return null;
+    const tileClassName = extraClassName ? ` ${extraClassName}` : "";
     if (tile === tilePlaceholder || tile === tileBack) {
       return (
         <span
           key={`${tile}-${idx}`}
-          className={`${tile === tileBack ? "tile-back" : "tile-placeholder"}${onClick ? " tile-clickable" : ""}`}
+          className={`${tile === tileBack ? "tile-back" : "tile-placeholder"}${onClick ? " tile-clickable" : ""}${tileClassName}`}
           style={{ width: size.w, height: size.h }}
           onClick={onClick}
           onContextMenu={onContextMenu}
@@ -66,6 +68,7 @@ export const SeatBlock = ({
       return (
         <img
           key={`${tile}-${idx}`}
+          className={`hand-tile-img${extraClassName ? ` ${extraClassName}` : ""}`}
           src={src}
           alt={tile}
           style={style}
@@ -79,11 +82,27 @@ export const SeatBlock = ({
         key={`${tile}-${idx}`}
         onClick={onClick}
         onContextMenu={onContextMenu}
-        className={onClick ? "tile-clickable" : ""}
+        className={`${onClick ? "tile-clickable" : ""}${tileClassName}`}
       >
         {tile}
       </span>
     );
+  };
+
+  const normTile = (tile: string) => {
+    const value = String(tile ?? "").trim();
+    if (value.length === 2 && value[0] === "0" && "mps".includes(value[1])) {
+      return `5${value[1]}`;
+    }
+    return value;
+  };
+
+  const canDiscardForRiichi = (tile: TileStr) => {
+    if (!item.riichiPending) return true;
+    const discardables = item.riichiDiscardables ?? [];
+    if (!discardables.length) return false;
+    const target = normTile(tile);
+    return discardables.some((candidate) => normTile(candidate) === target);
   };
 
   const renderHandRow = () => {
@@ -93,29 +112,38 @@ export const SeatBlock = ({
     return (
       <span>
         {tiles.map((tile, idx) =>
-          tile
-            ? renderTileImage(
-                tile,
-                idx,
-                item.clickable ? (event) => onHandTileClick(item.seat, tile, idx, event) : undefined,
-                onHandTileContextMenu
-                  ? (event) => onHandTileContextMenu(item.seat, tile, idx, event)
-                  : undefined
-              )
-            : null
+          tile ? (() => {
+            const riichiDisabled = item.riichiPending && !canDiscardForRiichi(tile);
+            return renderTileImage(
+              tile,
+              idx,
+              item.clickable && !riichiDisabled ? (event) => onHandTileClick(item.seat, tile, idx, event) : undefined,
+              item.clickable && !riichiDisabled && onHandTileContextMenu
+                ? (event) => onHandTileContextMenu(item.seat, tile, idx, event)
+                : undefined,
+              { w: tileWidth, h: tileHeight },
+              riichiDisabled ? "tile-disabled" : ""
+            );
+          })() : null
         )}
         {item.player.drawnTile ? (
           <span className="drawn-tile">
-            {renderTileImage(
-              item.player.drawnTile,
-              tiles.length,
-              item.clickable
-                ? (event) => onHandTileClick(item.seat, item.player.drawnTile ?? "", tiles.length, event)
-                : undefined,
-              onHandTileContextMenu
-                ? (event) => onHandTileContextMenu(item.seat, item.player.drawnTile ?? "", tiles.length, event)
-                : undefined
-            )}
+            {(() => {
+              const drawnTile = item.player.drawnTile ?? "";
+              const riichiDisabled = item.riichiPending && !canDiscardForRiichi(drawnTile);
+              return renderTileImage(
+                drawnTile,
+                tiles.length,
+                item.clickable && !riichiDisabled
+                  ? (event) => onHandTileClick(item.seat, drawnTile, tiles.length, event)
+                  : undefined,
+                item.clickable && !riichiDisabled && onHandTileContextMenu
+                  ? (event) => onHandTileContextMenu(item.seat, drawnTile, tiles.length, event)
+                  : undefined,
+                { w: tileWidth, h: tileHeight },
+                riichiDisabled ? "tile-disabled" : ""
+              );
+            })()}
           </span>
         ) : showDrawPlaceholder ? (
           <span className="drawn-tile">
@@ -155,10 +183,12 @@ export const SeatBlock = ({
 
   const renderDiscardRow = () => {
     const tiles = item.player.discards ?? [];
+    const calledIndices = new Set(item.calledDiscardIndices ?? []);
     if (!tiles.length) return <span className="discard-empty">河</span>;
     const riichiIndex = item.riichiIndex;
     const renderDiscardTile = (tile: TileStr, idx: number) => {
       const sideways = riichiIndex !== null && riichiIndex === idx;
+      const called = calledIndices.has(idx);
       const wrapStyle: CSSProperties = {
         width: sideways ? meldTileHeight : meldTileWidth,
         height: sideways ? meldTileWidth : meldTileHeight,
@@ -175,7 +205,7 @@ export const SeatBlock = ({
         return (
           <span
             key={`discard-${item.seat}-${idx}`}
-            className={tile === tileBack ? "tile-back" : "tile-placeholder"}
+            className={`${tile === tileBack ? "tile-back" : "tile-placeholder"}${called ? " discard-called" : ""}`}
             style={wrapStyle}
           />
         );
@@ -183,13 +213,21 @@ export const SeatBlock = ({
       const src = tileToAsset(tile);
       if (src) {
         return (
-          <span key={`discard-${item.seat}-${idx}`} className="discard-tile-wrap" style={wrapStyle}>
+          <span
+            key={`discard-${item.seat}-${idx}`}
+            className={`discard-tile-wrap${called ? " discard-called" : ""}`}
+            style={wrapStyle}
+          >
             <img className="discard-tile-img" src={src} alt={tile} style={imgStyle} />
           </span>
         );
       }
       return (
-        <span key={`discard-${item.seat}-${idx}`} className="discard-tile-wrap" style={wrapStyle}>
+        <span
+          key={`discard-${item.seat}-${idx}`}
+          className={`discard-tile-wrap${called ? " discard-called" : ""}`}
+          style={wrapStyle}
+        >
           {tile}
         </span>
       );
@@ -203,7 +241,7 @@ export const SeatBlock = ({
     <div className={`seat-block${item.isTurn ? " is-turn" : ""}${item.isEditable ? " is-editable" : ""}`}>
       <div className="seat-title-row">
         <div>
-          <span>{item.seatLabel}</span>
+          <span className="seat-label">{item.seatLabel}</span>
         </div>
         {hasHeaderActions && (
           <div className="seat-title-actions">
