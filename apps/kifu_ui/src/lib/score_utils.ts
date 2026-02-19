@@ -223,6 +223,17 @@ export const buildJapaneseYakuList = (
     if (normalizedKey.startsWith("yakuhai")) {
       const lower = name.toLowerCase();
       const has = (token: string) => lower.includes(token);
+      const hasRoundWindToken =
+        has("roundwind") || has("round wind") || has("windofround") || has("wind of round");
+      const hasSeatWindToken =
+        has("seatwind") ||
+        has("seat wind") ||
+        has("windofplace") ||
+        has("wind of place") ||
+        has("windofseat") ||
+        has("wind of seat") ||
+        has("windofown") ||
+        has("wind of own");
       if (has("haku") || has("hak")) {
         results.push("役牌 白(1飜)");
         return;
@@ -235,20 +246,20 @@ export const buildJapaneseYakuList = (
         results.push("役牌 中(1飜)");
         return;
       }
-      if (has("roundwind") || has("round wind")) {
+      if (hasRoundWindToken) {
         if (has("east")) results.push("場風 東(1飜)");
         else if (has("south")) results.push("場風 南(1飜)");
         else if (has("west")) results.push("場風 西(1飜)");
         else if (has("north")) results.push("場風 北(1飜)");
-        else results.push("場風(1飜)");
+        else results.push(`場風 ${windLabel(roundWind)}(1飜)`);
         return;
       }
-      if (has("seatwind") || has("seat wind")) {
+      if (hasSeatWindToken) {
         if (has("east")) results.push("自風 東(1飜)");
         else if (has("south")) results.push("自風 南(1飜)");
         else if (has("west")) results.push("自風 西(1飜)");
         else if (has("north")) results.push("自風 北(1飜)");
-        else results.push("自風(1飜)");
+        else results.push(`自風 ${windLabel(seatWind)}(1飜)`);
         return;
       }
       // fallback: use wind tokens if present

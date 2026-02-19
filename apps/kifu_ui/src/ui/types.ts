@@ -47,4 +47,7 @@ export type SeatBlockItem = {
   player: PlayerLike;
   clickable: boolean;
   riichiIndex: number | null;
+  calledDiscardIndices?: number[];
+  riichiPending?: boolean;
+  riichiDiscardables?: TileStr[];
 };

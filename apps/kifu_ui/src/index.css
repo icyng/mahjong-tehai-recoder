@@ -4,6 +4,7 @@
   background-color: #004451;
   --panel-btn-w: 100px;
   --panel-btn-h: 30px;
+  --seat-summary-info-w: 120px;
 }
 
 * {
@@ -12,7 +13,7 @@
 
 body {
   margin: 0;
-  background: radial-gradient(circle at 30% 30%, #004451 0%, #012229 80%);
+  background: radial-gradient(circle at 50% 50%, #034f5e 10%, #061d22 90%);
 }
 
 #root {
@@ -54,7 +55,7 @@ body {
 }
 
 .left-tools {
-  height: 400px;
+  max-height: 370px;
   width: 200px;
   display: flex;
   flex-direction: column;
@@ -77,7 +78,8 @@ body {
 .remaining-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 3px 4px;
+  row-gap: 2px;
+  column-gap: 6px;
 }
 
 .remaining-break {
@@ -90,9 +92,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  padding: 1px 2px;
-  border-radius: 6px;
+  padding: 0px 2px;
+  border-radius: 5px;
   background: rgba(0, 0, 0, 0.15);
 }
 
@@ -104,6 +105,14 @@ body {
   width: 28px;
   height: auto;
   display: block;
+}
+
+.remaining-img,
+.hand-tile-img {
+  border-radius: 4px;
+  border: 0.5px solid #2e2e2e;
+  background: #f5f2e9;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
 }
 
 .remaining-count {
@@ -261,6 +270,11 @@ body {
 
 .tile-clickable {
   cursor: pointer;
+}
+
+.tile-disabled {
+  filter: grayscale(1);
+  opacity: 0.45;
 }
 
 .drawn-tile {
@@ -463,6 +477,46 @@ body {
   margin-top: 0;
 }
 
+.log-title-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+  margin-bottom: 5px;
+}
+
+.log-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.log-title-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #f2fbfd;
+  white-space: nowrap;
+}
+
+.log-title-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #f6fcff;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.log-title-input::placeholder {
+  color: rgba(246, 252, 255, 0.55);
+}
+
 .settings-grid-compact {
   grid-template-columns: 1.7fr 1fr 1fr;
   column-gap: 8px;
@@ -519,6 +573,12 @@ body {
 .picker-title {
   font-size: 14px;
   color: #cfe8ee;
+}
+
+.picker-title span {
+  margin-left: 6px;
+  font-size: 11px;
+  color: #9fd6de;
 }
 
 .picker-grid {
@@ -592,7 +652,7 @@ body {
 .seat-block {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   padding: 5px;
   margin-bottom: 12px;
@@ -609,24 +669,49 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 5px;
+}
+
+.seat-label {
+  font-weight: 800;
+  color: #f2fbfd;
 }
 
 .seat-title-actions {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.seat-title-actions .action-button {
-  width: 70px;
+.seat-title-actions .action-button:not(.import-button) {
+  min-width: 88px;
   height: 20px;
-  font-size: 10px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #111111;
+  background: #f3cc54;
+  border: 1px solid #d9aa22;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.seat-title-actions .action-button:not(.import-button):hover:not(:disabled) {
+  background: #f9d768;
+}
+
+.seat-title-actions .action-button:not(.import-button):disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .seat-title-actions .import-button {
   width: 84px;
+  height: 24px;
+  font-size: 11px;
+  color: #cfe8ee;
+  background: #0f5d67;
+  border: 2px solid rgba(90, 160, 168, 0.8);
 }
 
 .seat-summary-row {
@@ -656,7 +741,7 @@ body {
 
 .seat-summary-body {
   display: grid;
-  grid-template-columns: 100px 180px;
+  grid-template-columns: 100px var(--seat-summary-info-w);
   gap: 8px;
   align-items: stretch;
 }
@@ -727,10 +812,13 @@ body {
 
 .seat-summary-info {
   display: grid;
-  grid-template-rows: auto 2fr auto;
+  grid-template-rows: 1fr 1fr 1fr;
   gap: 5px;
   height: 100%;
-  max-width: 100px;
+  width: var(--seat-summary-info-w);
+  max-width: var(--seat-summary-info-w);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .seat-summary.is-turn {
@@ -741,8 +829,10 @@ body {
 .seat-summary-name-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 5px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.16);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -752,6 +842,7 @@ body {
   font-size: 12px;
   font-weight: 700;
   color: #f2fbfd;
+  white-space: nowrap;
 }
 
 .seat-summary-name-input {
@@ -768,8 +859,10 @@ body {
 .seat-summary-points-row {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 5px;
   border-radius: 10px;
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -782,9 +875,10 @@ body {
   border: none;
   outline: none;
   color: #f6fcff;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 800;
   width: 100%;
+  min-width: 0;
   text-align: right;
   appearance: textfield;
 }
@@ -796,19 +890,23 @@ body {
 }
 
 .points-unit {
-  font-size: 11px;
+  font-size: 10px;
+  white-space: nowrap;
   opacity: 0.85;
 }
 
 .seat-summary-waits {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
   flex-wrap: wrap;
-  min-height: 24px;
-  max-height: 24px;
-  padding-top: 4px;
+  min-height: 35px;
+  max-height: 35px;
+  padding-top: 3px;
   border-top: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
 }
 
 .seat-summary-waits.empty {
@@ -865,7 +963,7 @@ body {
 .hand-row {
   display: flex;
   align-items: flex-end;
-  margin-bottom: 0px;
+  gap: 5px;
 }
 
 .hand-tiles {
@@ -911,7 +1009,6 @@ body {
 }
 
 .discard-block {
-  margin-top: 2px;
   border-radius: 4px;
   border: 2px solid rgba(200, 170, 60, 0.5);
   min-height: 32px;
@@ -930,9 +1027,14 @@ body {
   justify-content: center;
 }
 
+.discard-tile-wrap.discard-called,
+.discard-called {
+  filter: grayscale(1) saturate(0.15) brightness(0.9);
+  opacity: 0.5;
+}
+
 .discard-tile-img {
   display: block;
-  margin-top: 0px;
 }
 
 .discard-empty {

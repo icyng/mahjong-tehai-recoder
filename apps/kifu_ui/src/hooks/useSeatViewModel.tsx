@@ -20,6 +20,9 @@ type UseSeatViewModelParams<PlayerT extends PlayerLike> = {
   clickableBySeat: Record<Seat, boolean>;
   editableBySeat: Record<Seat, boolean>;
   riichiDiscards: Record<Seat, number | null>;
+  calledDiscardIndicesBySeat: Record<Seat, number[]>;
+  riichiPendingBySeat: Record<Seat, boolean>;
+  riichiDiscardablesBySeat: Record<Seat, TileStr[]>;
 };
 
 export const useSeatViewModel = <PlayerT extends PlayerLike>(params: UseSeatViewModelParams<PlayerT>) => {
@@ -35,7 +38,10 @@ export const useSeatViewModel = <PlayerT extends PlayerLike>(params: UseSeatView
     updateSeatPoints,
     clickableBySeat,
     editableBySeat,
-    riichiDiscards
+    riichiDiscards,
+    calledDiscardIndicesBySeat,
+    riichiPendingBySeat,
+    riichiDiscardablesBySeat
   } = params;
 
   const seatSummaryItems: SeatSummaryItem[] = useMemo(
@@ -71,10 +77,25 @@ export const useSeatViewModel = <PlayerT extends PlayerLike>(params: UseSeatView
           actions: buildSeatActions(seat, player),
           player,
           clickable: clickableBySeat[seat],
-          riichiIndex: riichiDiscards[seat] ?? null
+          riichiIndex: riichiDiscards[seat] ?? null,
+          calledDiscardIndices: calledDiscardIndicesBySeat[seat] ?? [],
+          riichiPending: riichiPendingBySeat[seat] ?? false,
+          riichiDiscardables: riichiDiscardablesBySeat[seat] ?? []
         };
       }),
-    [seatOrder, viewState.players, viewState.turn, windLabels, buildSeatActions, clickableBySeat, editableBySeat, riichiDiscards]
+    [
+      seatOrder,
+      viewState.players,
+      viewState.turn,
+      windLabels,
+      buildSeatActions,
+      clickableBySeat,
+      editableBySeat,
+      riichiDiscards,
+      calledDiscardIndicesBySeat,
+      riichiPendingBySeat,
+      riichiDiscardablesBySeat
+    ]
   );
 
   return { seatSummaryItems, seatBlockItems };
