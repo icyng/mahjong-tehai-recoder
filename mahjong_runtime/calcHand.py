@@ -51,7 +51,7 @@ def self_config(has_aka, **kwargs):
     """
     return HandConfig(
         is_tsumo=kwargs.get('is_tsumo', False),
-        is_riichi=kwargs.get('is_riichi', True),
+        is_riichi=kwargs.get('is_riichi', False),
         is_ippatsu=kwargs.get('is_ippatsu', False),
         is_rinshan=kwargs.get('is_rinshan', False),
         is_chankan=kwargs.get('is_chankan', False),
@@ -71,11 +71,11 @@ def self_config(has_aka, **kwargs):
         options=OptionalRules(
             has_open_tanyao=kwargs.get('has_open_tanyao', True),
             has_aka_dora=has_aka,
-            has_double_yakuman=kwargs.get('has_double_yakuman', False),
+            has_double_yakuman=kwargs.get('has_double_yakuman', True),
             kazoe_limit=HandConfig.KAZOE_LIMITED,
-            kiriage=kwargs.get('kiriage', False),
-            fu_for_open_pinfu=kwargs.get('fu_for_open_pinfu', False),
-            fu_for_pinfu_tsumo=kwargs.get('fu_for_pinfu_tsumo', False),
+            kiriage=kwargs.get('kiriage', True),
+            fu_for_open_pinfu=kwargs.get('fu_for_open_pinfu', True),
+            fu_for_pinfu_tsumo=kwargs.get('fu_for_pinfu_tsumo', True),
             renhou_as_yakuman=kwargs.get('renhou_as_yakuman', False),
             has_daisharin=kwargs.get('has_daisharin', False),
             has_daisharin_other_suits=kwargs.get('has_daisharin_other_suits', False),
