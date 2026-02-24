@@ -317,6 +317,7 @@ def analyze_hand_api(payload: dict) -> dict:
         is_renhou = bool(payload.get("is_renhou", False))
         is_chiihou = bool(payload.get("is_chiihou", False))
         is_open_riichi = bool(payload.get("is_open_riichi", False))
+        kiriage = bool(payload.get("kiriage", True))
         try:
             paarenchan = int(payload.get("paarenchan", 0) or 0)
         except (TypeError, ValueError):
@@ -340,6 +341,7 @@ def analyze_hand_api(payload: dict) -> dict:
             is_renhou=is_renhou,
             is_chiihou=is_chiihou,
             is_open_riichi=is_open_riichi,
+            kiriage=kiriage,
             paarenchan=paarenchan,
             player_wind=WIND_MAP.get(seat_wind, EAST),
             round_wind=WIND_MAP.get(round_wind, EAST),
