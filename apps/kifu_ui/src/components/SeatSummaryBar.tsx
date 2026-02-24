@@ -10,24 +10,39 @@ export const SeatSummaryBar = ({ items, tileToAsset, remainingCountForDisplay }:
   <div className="seat-summary-bar">
     <div className="seat-summary-row">
       {items.map((item) => (
-        <div key={`seat-summary-${item.seat}`} className="seat-summary">
+        <div key={`seat-summary-${item.seat}`} className={`seat-summary${item.isTurn ? " is-turn" : ""}`}>
           <div className="seat-summary-body">
             <div className="seat-summary-avatar-col">
-              <div className="seat-summary-avatar-box">
+              <input
+                id={`avatar-input-${item.seat}`}
+                className="seat-summary-avatar-input"
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  item.onAvatarChange?.(file);
+                  e.currentTarget.value = "";
+                }}
+              />
+              <label htmlFor={`avatar-input-${item.seat}`} className="seat-summary-avatar-box seat-summary-avatar-box-clickable">
                 <div className="seat-summary-avatar">
-                  <svg className="avatar-icon" viewBox="0 0 64 64" role="img" aria-label="player">
-                    <circle cx="32" cy="22" r="12" />
-                    <path d="M12 54c0-10 9-18 20-18s20 8 20 18v4H12z" />
-                  </svg>
+                  {item.avatarUrl ? (
+                    <img className="seat-summary-avatar-img" src={item.avatarUrl} alt={`${item.windLabel} avatar`} />
+                  ) : (
+                    <svg className="avatar-icon" viewBox="0 0 64 64" role="img" aria-label="player">
+                      <circle cx="32" cy="22" r="12" />
+                      <path d="M12 54c0-10 9-18 20-18s20 8 20 18v4H12z" />
+                    </svg>
+                  )}
                 </div>
                 {item.statusLabel && (
                   <div className={`seat-summary-status ${item.statusClass}`}>{item.statusLabel}</div>
                 )}
-              </div>
+              </label>
             </div>
             <div className="seat-summary-info">
               <div className="seat-summary-name-row">
-                <span className="seat-summary-wind-label">{item.windLabel} :</span>
+                <span className="seat-summary-wind-label">{item.windLabel}家 :</span>
                 <input
                   className="seat-summary-name-input"
                   value={item.name}
