@@ -1,6 +1,6 @@
 import type { Seat, TileStr } from "../ui/types";
-import { scoreWin, type WinPayload } from "./mahjong_api";
-import { getDoraIndicators, getUraDoraIndicators } from "./score_utils";
+import { scoreWin, type ScoreResponse, type WinPayload } from "./mahjong_api";
+import { getDoraIndicators, getUraDoraIndicators, resolveSeatWind } from "./score_utils";
 
 export type WinOptionFlags = {
   is_ippatsu: boolean;
@@ -20,6 +20,7 @@ export type WinOptionFlags = {
   akaCount: number;
 };
 
+// 画面側の副露表現（表示用情報を含む）
 export type MeldLike = {
   kind: string;
   tiles: TileStr[];
@@ -29,6 +30,7 @@ export type MeldLike = {
   [key: string]: unknown;
 };
 
+// 点数判定APIへ渡すための最小プレイヤー情報
 export type PlayerForScorePayload = {
   hand: TileStr[];
   melds: MeldLike[];
@@ -36,6 +38,7 @@ export type PlayerForScorePayload = {
   riichi: boolean;
 };
 
+// 局メタ（場風/供託/本場/ドラ表示牌）
 export type MetaForScorePayload = {
   wind: Seat;
   honba: number;
@@ -46,6 +49,7 @@ export type MetaForScorePayload = {
   doraRevealedCount?: number;
 };
 
+// 和了判定呼び出し時の文脈
 export type ScoreContext = {
   player: PlayerForScorePayload;
   winner: Seat;
@@ -54,6 +58,7 @@ export type ScoreContext = {
   meta: MetaForScorePayload;
 };
 
+// score API へ送る副露正規化のバリアント
 export type MeldScoreOptions = {
   collapseKanKind: boolean;
   includeCalledTileInTiles: "keep" | "force" | "remove";
@@ -80,27 +85,23 @@ type BuildScorePayloadParams = {
   tileEq: (a: string, b: string) => boolean;
   sortTiles: (tiles: TileStr[]) => TileStr[];
   extraFlags?: WinOptionFlags;
+  kiriage?: boolean;
   debug?: boolean;
-};
-
-type ScoreApiResult = {
-  ok?: boolean;
-  error?: string;
-  result?: { han?: number; [key: string]: unknown };
-  [key: string]: unknown;
 };
 
 type ScoreWithVariantsParams = {
   context: ScoreContext;
   extraFlags?: WinOptionFlags;
+  kiriage?: boolean;
   canonicalTile: (tile: string) => string;
   tileNorm: (tile: string) => string;
   tileEq: (a: string, b: string) => boolean;
   sortTiles: (tiles: TileStr[]) => TileStr[];
-  scoreWinFn?: (payload: WinPayload) => Promise<ScoreApiResult>;
+  scoreWinFn?: (payload: WinPayload) => Promise<ScoreResponse>;
   debug?: boolean;
 };
 
+// バックエンド互換のため槓種別を必要に応じて KAN へ畳む
 const normalizeMeldKindForScore = (kind: string, collapseKanKind: boolean) => {
   const upper = kind?.toUpperCase?.() ?? kind;
   if (upper === "CHI" || upper === "PON") return upper;
@@ -110,6 +111,7 @@ const normalizeMeldKindForScore = (kind: string, collapseKanKind: boolean) => {
   return collapseKanKind ? "KAN" : upper;
 };
 
+// 副露牌を用途に応じて並び替え・呼び牌の含有調整を行う
 const normalizeMeldTilesForScore = (meld: MeldLike, options: MeldScoreOptions) => {
   const normalize = options.normalizeTile;
   let tiles = (meld.tiles ?? []).map((tile) => normalize(tile));
@@ -178,6 +180,7 @@ export const buildScoreContext = (
   meta
 });
 
+// score API 送信payloadを構築
 export const buildScorePayload = ({
   context,
   variant,
@@ -187,6 +190,7 @@ export const buildScorePayload = ({
   tileEq,
   sortTiles,
   extraFlags,
+  kiriage,
   debug
 }: BuildScorePayloadParams): WinPayload => {
   const normalize = tileMode === "norm" ? tileNorm : canonicalTile;
@@ -220,29 +224,32 @@ export const buildScorePayload = ({
     is_open_riichi: extraFlags?.is_open_riichi,
     paarenchan: extraFlags?.paarenchan ? 1 : 0,
     roundWind: context.meta.wind,
-    seatWind: context.winner,
+    seatWind: resolveSeatWind(context.winner, context.meta.dealer),
     doraIndicators: getDoraIndicators(context.meta).filter(Boolean).map((tile) => normalize(tile)),
     uraDoraIndicators: getUraDoraIndicators(context.meta).filter(Boolean).map((tile) => normalize(tile)),
     honba: context.meta.honba,
     riichiSticks: context.meta.riichiSticks,
     dealer: context.winner === context.meta.dealer,
+    kiriage,
     ...(context.winType === "tsumo" ? { menzenTsumo: context.player.closed } : {}),
     ...(debug ? { debug: true } : {})
   };
 };
 
+// 複数表現を順に試し、han>0 を最優先で採用
 export const scoreWinWithVariants = async ({
   context,
   extraFlags,
+  kiriage,
   canonicalTile,
   tileNorm,
   tileEq,
   sortTiles,
   scoreWinFn = scoreWin,
   debug
-}: ScoreWithVariantsParams): Promise<ScoreApiResult> => {
+}: ScoreWithVariantsParams): Promise<ScoreResponse> => {
   const tried = new Set<string>();
-  let firstResult: ScoreApiResult | null = null;
+  let firstResult: ScoreResponse | null = null;
 
   const attempt = async (variant: (typeof SCORE_MELD_VARIANTS)[number], tileMode: "canonical" | "norm") => {
     const payload = buildScorePayload({
@@ -254,13 +261,16 @@ export const scoreWinWithVariants = async ({
       tileEq,
       sortTiles,
       extraFlags,
+      kiriage,
       debug
     });
     const key = JSON.stringify(payload);
     if (tried.has(key)) return null;
     tried.add(key);
 
-    const res = await scoreWinFn(payload).catch((err) => ({ ok: false, error: String(err), result: undefined }));
+    const res = await scoreWinFn(payload).catch(
+      (err): ScoreResponse => ({ ok: false, error: String(err), result: undefined })
+    );
     if (!firstResult) firstResult = res;
     const han = res?.result?.han ?? 0;
     if (res?.ok && han > 0) return res;

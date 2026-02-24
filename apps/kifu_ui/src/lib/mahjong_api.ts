@@ -29,9 +29,43 @@ export type CaptureResponse = {
   error?: string;
 };
 
+export type MeldPayload = {
+  kind: string;
+  tiles: TileStr[];
+  calledTile?: TileStr;
+  calledFrom?: Seat;
+  open?: boolean;
+  [key: string]: unknown;
+};
+
+export type ScoreCost = {
+  main: number;
+  additional?: number;
+  main_bonus?: number;
+  additional_bonus?: number;
+  kyoutaku_bonus?: number;
+  total?: number;
+  yaku_level?: string;
+};
+
+export type ScoreResult = {
+  han: number;
+  fu: number;
+  cost: ScoreCost | null;
+  yaku: string[];
+  [key: string]: unknown;
+};
+
+export type ScoreResponse = {
+  ok: boolean;
+  error?: string;
+  result?: ScoreResult;
+  debug?: string[];
+};
+
 export type WinPayload = {
   hand: TileStr[];
-  melds: any[];
+  melds: MeldPayload[];
   winTile: TileStr;
   winType: "ron" | "tsumo";
   isClosed: boolean;
@@ -55,11 +89,12 @@ export type WinPayload = {
   honba: number;
   riichiSticks: number;
   dealer: boolean;
+  kiriage?: boolean;
   menzenTsumo?: boolean;
   debug?: boolean;
 };
 
-const postJson = async <T = any>(path: string, payload: unknown, timeoutMs?: number): Promise<T> => {
+const postJson = async <T = unknown>(path: string, payload: unknown, timeoutMs?: number): Promise<T> => {
   const controller = timeoutMs ? new AbortController() : null;
   const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
@@ -78,10 +113,11 @@ const postJson = async <T = any>(path: string, payload: unknown, timeoutMs?: num
   }
 };
 
-export const postTenpai = (hand: TileStr[], melds: any[] = [], timeoutMs = 5000): Promise<TenpaiResponse> =>
+export const postTenpai = (hand: TileStr[], melds: MeldPayload[] = [], timeoutMs = 5000): Promise<TenpaiResponse> =>
   postJson<TenpaiResponse>("/tenpai", { hand, melds }, timeoutMs);
 
-export const scoreWin = (payload: WinPayload): Promise<any> => postJson<any>("/hand", payload);
+export const scoreWin = (payload: WinPayload): Promise<ScoreResponse> =>
+  postJson<ScoreResponse>("/hand", payload);
 
 export const analyzeTilesFromImage = async (file: File, timeoutMs = 60000): Promise<ImageAnalyzeResponse> => {
   const form = new FormData();

@@ -20,7 +20,6 @@ type BuildSeatActionsParams = {
   captureAnalyzing: boolean;
   captureStarting: boolean;
   onCapture: (seat: Seat) => void;
-  onCaptureStop: () => void;
   onRiichi: () => void;
   onRiichiCancel: () => void;
   onTsumo: () => void;
@@ -51,7 +50,6 @@ export const buildSeatActionList = ({
   captureAnalyzing,
   captureStarting,
   onCapture,
-  onCaptureStop,
   onRiichi,
   onRiichiCancel,
   onTsumo,
@@ -68,12 +66,6 @@ export const buildSeatActionList = ({
       label: captureAnalyzing ? "解析中..." : "キャプチャ",
       onClick: () => onCapture(seat),
       disabled: captureAnalyzing || captureStarting
-    });
-    actions.push({
-      key: "capture-stop",
-      label: "共有終了",
-      onClick: onCaptureStop,
-      disabled: captureAnalyzing
     });
   }
 

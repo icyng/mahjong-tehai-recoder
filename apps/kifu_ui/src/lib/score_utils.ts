@@ -1,6 +1,7 @@
 import type { Seat, TileStr } from "../ui/types";
 import MANGAN_OVER_TABLE from "./mangan_over_table.json";
 import { YAKU_BASE_MAP } from "./yaku_map";
+import type { ScoreResult } from "./mahjong_api";
 
 export type DoraCounts = {
   dora: number;
@@ -30,6 +31,17 @@ export type ScoreContextLike = {
   meta: MetaForScore;
 };
 
+const WIND_ROTATION: Seat[] = ["E", "S", "W", "N"];
+
+// 親基準で見た各家の自風を計算
+export const resolveSeatWind = (seat: Seat, dealerSeat: Seat): Seat => {
+  const seatIdx = WIND_ROTATION.indexOf(seat);
+  const dealerIdx = WIND_ROTATION.indexOf(dealerSeat);
+  if (seatIdx < 0 || dealerIdx < 0) return seat;
+  const relative = (seatIdx - dealerIdx + WIND_ROTATION.length) % WIND_ROTATION.length;
+  return WIND_ROTATION[relative] ?? seat;
+};
+
 const LIMIT_TIER_KEY: Record<string, "mangan" | "haneman" | "baiman" | "sanbaiman" | "yakuman"> = {
   満貫: "mangan",
   跳満: "haneman",
@@ -37,6 +49,13 @@ const LIMIT_TIER_KEY: Record<string, "mangan" | "haneman" | "baiman" | "sanbaima
   三倍満: "sanbaiman",
   役満: "yakuman"
 };
+
+type LimitTier = keyof typeof LIMIT_TIER_KEY;
+type ManganTableKey = (typeof LIMIT_TIER_KEY)[LimitTier];
+type ManganOverTable = {
+  points: Record<"ron" | "tsumo", Record<"dealer" | "nonDealer", Record<ManganTableKey, string>>>;
+};
+const MANGAN_TABLE = MANGAN_OVER_TABLE as ManganOverTable;
 
 const canonicalTile = (tile: string) => {
   const trimmed = tile.trim();
@@ -75,6 +94,7 @@ export const doraFromIndicator = (tile: string): string | null => {
   return null;
 };
 
+// 「ドラ牌」から対応する表示牌へ逆変換（UI編集用）
 export const indicatorFromDora = (tile: string): string | null => {
   const canon = canonicalTile(tile);
   if (!canon) return null;
@@ -147,8 +167,9 @@ export const computeDoraCountsForWin = (
   return { dora, ura, aka };
 };
 
-export const rebuildDoraYakuList = (yaku: unknown, doraCounts: DoraCounts | null) => {
-  if (!Array.isArray(yaku)) return yaku;
+// API戻りのドラ役を、UI確定値ベースで置換
+export const rebuildDoraYakuList = (yaku: unknown, doraCounts: DoraCounts | null): string[] => {
+  if (!Array.isArray(yaku)) return [];
   const filtered = yaku.filter((item) => {
     if (typeof item !== "string") return true;
     const normalized = item.replace(/[\s_-]+/g, "").toLowerCase();
@@ -162,19 +183,24 @@ export const rebuildDoraYakuList = (yaku: unknown, doraCounts: DoraCounts | null
   return next;
 };
 
-export const getLimitTier = (han: number, fu: number) => {
+// 点数表示用の満貫以上判定（切り上げ満貫含む）
+export const getLimitTier = (han: number, fu: number): LimitTier | null => {
   if (han >= 13) return "役満";
   if (han >= 11) return "三倍満";
   if (han >= 8) return "倍満";
   if (han >= 6) return "跳満";
   if (han >= 5) return "満貫";
+  // 切り上げ満貫
+  if (han === 4 && fu === 30) return "満貫";
+  if (han === 3 && fu === 60) return "満貫";
   if (han === 4 && fu >= 40) return "満貫";
   if (han === 3 && fu >= 70) return "満貫";
   return null;
 };
 
+// JSONログ用の点数文字列へ整形
 export const formatScoreSummaryForLog = (
-  result: any,
+  result: Pick<ScoreResult, "han" | "fu" | "cost"> | null | undefined,
   winType: "ron" | "tsumo",
   isDealer: boolean
 ) => {
@@ -185,8 +211,7 @@ export const formatScoreSummaryForLog = (
   const limitTier = getLimitTier(han, fu);
   if (limitTier) {
     const tierKey = LIMIT_TIER_KEY[limitTier];
-    const points =
-      (MANGAN_OVER_TABLE?.points as any)?.[winType]?.[isDealer ? "dealer" : "nonDealer"]?.[tierKey] ?? "";
+    const points = MANGAN_TABLE.points[winType][isDealer ? "dealer" : "nonDealer"][tierKey] ?? "";
     return `${limitTier}${points}`;
   }
   if (cost?.additional) {
@@ -204,6 +229,7 @@ export const formatScoreSummaryForLog = (
   return `${fu}符${han}飜0点`;
 };
 
+// 役名を日本語表示へ変換（風役は場風/自風を文脈で解決）
 export const buildJapaneseYakuList = (
   yaku: unknown,
   isClosed: boolean,
