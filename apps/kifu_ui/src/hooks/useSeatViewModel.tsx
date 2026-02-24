@@ -52,6 +52,7 @@ export const useSeatViewModel = <PlayerT extends PlayerLike>(params: UseSeatView
         const statusClass = player.riichi ? "status-riichi" : "status-tenpai";
         return {
           seat,
+          isTurn: seat === viewState.turn,
           windLabel: windLabels[seat],
           name: seatNames[seat] ?? "",
           points: viewState.meta.points[seat],
@@ -62,7 +63,18 @@ export const useSeatViewModel = <PlayerT extends PlayerLike>(params: UseSeatView
           onPointsChange: (value) => updateSeatPoints(seat, value)
         };
       }),
-    [seatOrder, viewState.players, viewState.meta.points, waitsBySeat, tenpaiFlags, seatNames, windLabels, updateSeatName, updateSeatPoints]
+    [
+      seatOrder,
+      viewState.players,
+      viewState.meta.points,
+      viewState.turn,
+      waitsBySeat,
+      tenpaiFlags,
+      seatNames,
+      windLabels,
+      updateSeatName,
+      updateSeatPoints
+    ]
   );
 
   const seatBlockItems: SeatBlockItem[] = useMemo(
