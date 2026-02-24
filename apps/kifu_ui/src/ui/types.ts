@@ -9,6 +9,15 @@ export type SeatAction = {
   disabled?: boolean;
 };
 
+export type ActionLogKind = "ui" | "error" | "system";
+
+export type HonorTile = "E" | "S" | "W" | "N" | "P" | "F" | "C";
+
+export type ActionLogEntry = {
+  kind: ActionLogKind;
+  text: string;
+};
+
 export type MeldLike = {
   kind: string;
   tiles: TileStr[];
@@ -28,12 +37,15 @@ export type PlayerLike = {
 
 export type SeatSummaryItem = {
   seat: Seat;
+  isTurn: boolean;
   windLabel: string;
   name: string;
   points: number;
   statusLabel: string;
   statusClass: string;
   waits: TileStr[];
+  avatarUrl?: string;
+  onAvatarChange?: (file: File | null) => void;
   onNameChange: (value: string) => void;
   onPointsChange: (value: number) => void;
 };
