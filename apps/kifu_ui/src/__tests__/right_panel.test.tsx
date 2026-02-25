@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { RightPanel } from "../components/RightPanel";
 import type { ActionLogEntry } from "../ui/types";
 
@@ -56,10 +56,13 @@ describe("RightPanel", () => {
   test("ログ詳細モーダルで種別フィルタできる", () => {
     render(<RightPanel {...createProps()} />);
     fireEvent.click(screen.getByRole("button", { name: "ログ詳細" }));
-    expect(screen.getByText("ログ詳細")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "[ERROR]" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "[ERROR]" }));
-    expect(screen.getByText("牌枚数の不整合があります")).toBeInTheDocument();
-    expect(screen.queryByText("東ツモ: 1m")).not.toBeInTheDocument();
+    const detailList = document.querySelector(".log-detail-list");
+    expect(detailList).not.toBeNull();
+    const scoped = within(detailList as HTMLElement);
+    expect(scoped.getByText("牌枚数の不整合があります")).toBeInTheDocument();
+    expect(scoped.queryByText("東ツモ: 1m")).not.toBeInTheDocument();
   });
 
   test("画面共有の状態に応じてボタン文言が変わる", () => {
