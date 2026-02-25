@@ -1,6 +1,6 @@
 import type { Seat, TileStr } from "../ui/types";
 
-const apiBaseFromEnv = (import.meta.env.VITE_MAHJONG_API_BASE ?? "").trim();
+const apiBaseFromEnv = (import.meta.env?.VITE_MAHJONG_API_BASE ?? "").trim();
 export const MAHJONG_API_BASE = (apiBaseFromEnv || "http://localhost:8000/analysis").replace(/\/+$/, "");
 
 export type TenpaiResponse = {
